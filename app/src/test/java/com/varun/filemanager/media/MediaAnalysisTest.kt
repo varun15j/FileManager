@@ -60,3 +60,31 @@ class MediaAnalysisTest {
         assertEquals(listOf(2L, 1L), l.map { it.id })
     }
 }
+
+class SceneTest {
+    private fun person(cx: Float, cy: Float, s: Float = 0.3f) = DetectedObject(ObjKind.PERSON, "person", cx, cy, s, s)
+    private fun car(cx: Float, cy: Float) = DetectedObject(ObjKind.VEHICLE, "car", cx, cy, 0.4f, 0.2f)
+
+    @Test fun sameScenePersonNearSamePlace() {
+        assertTrue(SceneMatcher.sameScene(listOf(person(0.3f, 0.5f), car(0.7f, 0.7f)), listOf(person(0.33f, 0.52f), car(0.68f, 0.7f))))
+    }
+
+    @Test fun differentCountOrPositionIsNotSameScene() {
+        assertFalse(SceneMatcher.sameScene(listOf(person(0.3f, 0.5f)), listOf(person(0.3f, 0.5f), person(0.6f, 0.5f))))
+        assertFalse(SceneMatcher.sameScene(listOf(person(0.1f, 0.5f)), listOf(person(0.8f, 0.5f))))
+        assertFalse(SceneMatcher.sameScene(emptyList(), emptyList()))
+    }
+
+    @Test fun looseHashAcceptedOnlyWithSameScene() {
+        fun p(id: Long, objs: List<DetectedObject>) =
+            MediaItem(id, "u$id", null, "p$id", 1, id * 1000, 1000, 1000, false, hashes = longArrayOf(if (id == 1L) 0L else 0xFFFFFL), objects = objs)
+        val same = listOf(person(0.3f, 0.5f))
+        assertEquals(1, SimilarGrouper().groupPhotos(listOf(p(1, same), p(2, same))).size)
+        assertEquals(0, SimilarGrouper().groupPhotos(listOf(p(1, same), p(2, listOf(person(0.9f, 0.1f))))).size)
+    }
+
+    @Test fun positionAndDescription() {
+        assertEquals("left, middle", person(0.2f, 0.5f).position())
+        assertEquals("1 person (left, middle), 1 vehicle", SceneMatcher.describe(listOf(person(0.2f, 0.5f), car(0.5f, 0.5f))))
+    }
+}

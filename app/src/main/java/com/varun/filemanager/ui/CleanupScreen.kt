@@ -136,6 +136,7 @@ private fun GroupCard(g: SimilarGroup, vm: CleanupViewModel, loader: ImageLoader
                     Column(Modifier.padding(start = 8.dp)) {
                         Text(if (i === g.keeper) "${i.name} (best, kept)" else i.name)
                         Text("${i.width}×${i.height} · ${formatSize(i.sizeBytes)}", style = MaterialTheme.typography.bodySmall)
+                        SceneMatcher.describe(i.objects).takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }

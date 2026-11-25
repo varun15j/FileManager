@@ -30,3 +30,6 @@ Status: M1 code is written but not yet compiled locally (no Android SDK in the a
 - `media/MediaScanner`: MediaStore query, 256 px sampled decode, MediaMetadataRetriever frames.
 - `ui/CleanupScreen`: Similar / Blurry / Videos tabs. Delete uses `MediaStore.createTrashRequest` (system confirmation, recoverable) on Android 11+, app trash below.
 - Thresholds (Hamming 10, blur 60) are first guesses and need tuning on real photos. On-device ML embeddings (M4) are not in yet.
+
+## Object-aware similarity (PR 3)
+`media/ObjectTagger` runs the COCO EfficientDet-Lite0 detector (Apache-2.0, model file taken from the ADAS_cam project) through MediaPipe Tasks to find people and vehicles with normalized positions. `SceneMatcher` treats two photos as the same scene when the number of people and vehicles matches and each object sits in a similar place and size. `SimilarGrouper` accepts a looser hash distance (20 instead of 10) only in that case, so shots where the subject moved a little, or the framing changed, still group. The review cards show where people stand in the frame. The ADAS_cam `adas_india` model is not used: it was trained on dashcam frames and scored 26% mAP50 on its own test set.
