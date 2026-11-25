@@ -17,9 +17,16 @@ size → hash of first+last 64 KB → full SHA-256. Cheap filters first so large
 
 ## Roadmap
 - M2: storage analyzer, large files, junk, empty folders.
-- M3: similar photos – group by date taken (EXIF/MediaStore) within a time window, then dHash/pHash Hamming distance; keeper = resolution, size, sharpness (Laplacian variance).
+- M3 (started in PR 2): similar photos – group by date taken (EXIF/MediaStore) within a time window, then dHash/pHash Hamming distance; keeper = resolution, size, sharpness (Laplacian variance).
 - M4: on-device ML similarity – MobileNet / ML Kit embeddings via TFLite, cosine similarity to refine groups.
 - M5: similar videos – sample frames (MediaMetadataRetriever), hash them, compare with duration and size.
 - M6: MediaStore trash/delete requests, image thumbnails (Coil), polish.
 
 Status: M1 code is written but not yet compiled locally (no Android SDK in the authoring environment); the included GitHub Actions workflow builds and runs unit tests.
+
+## Photo/video analysis (PR 2)
+- `media/ImageMetrics`: dHash (9x8), Hamming distance, Laplacian-variance blur score. Platform-free, unit-tested.
+- `media/SimilarGrouper`: photos grouped by date-taken window (10 min) plus Hamming <= 10; videos by duration (3%) plus 5 sampled frame hashes; union-find clustering; keeper = highest resolution, then sharpest, then largest.
+- `media/MediaScanner`: MediaStore query, 256 px sampled decode, MediaMetadataRetriever frames.
+- `ui/CleanupScreen`: Similar / Blurry / Videos tabs. Delete uses `MediaStore.createTrashRequest` (system confirmation, recoverable) on Android 11+, app trash below.
+- Thresholds (Hamming 10, blur 60) are first guesses and need tuning on real photos. On-device ML embeddings (M4) are not in yet.

@@ -65,13 +65,15 @@ private fun AppRoot() {
             NavigationBar {
                 NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Folder, null) }, label = { Text("Files") })
                 NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.ContentCopy, null) }, label = { Text("Duplicates") })
+                NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.PhotoLibrary, null) }, label = { Text("Photos") })
             }
         },
     ) { pad ->
         Box(Modifier.padding(pad)) {
             when (tab) {
                 0 -> BrowserScreen(viewModel())
-                else -> DuplicatesScreen(viewModel())
+                1 -> DuplicatesScreen(viewModel())
+                else -> CleanupScreen(viewModel())
             }
         }
     }
