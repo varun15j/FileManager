@@ -1,9 +1,11 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-val buildNumber: Int = java.util.Properties().apply { file("version.properties").inputStream().use { load(it) } }.getProperty("buildNumber").trim().toInt()
+val buildNumber: Int = Properties().apply { file("version.properties").inputStream().use { load(it) } }.getProperty("buildNumber").trim().toInt()
 val gitSha: String = try {
     providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim()
 } catch (e: Exception) { "unknown" }
