@@ -39,7 +39,8 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     private fun grouper() = settings.thresholds.let {
         SimilarGrouper(maxHamming = it.maxHamming, photoWindowMs = it.windowMinutes * 60_000L, sceneMaxHamming = it.sceneHamming)
     }
-    private val scanner = MediaScanner(app)
+    private val engine = ScanEngine(app)
+    private val scanner = engine.scanner
 
     /** Documents/FileManagerTraining survives uninstall. Without all-files access we fall back to app storage (lost on uninstall). */
     val training: TrainingStore = TrainingStore(
@@ -56,15 +57,21 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     var videoGroups by mutableStateOf<List<SimilarGroup>>(emptyList()); private set
     var blurry by mutableStateOf<List<MediaItem>>(emptyList()); private set
     var stats by mutableStateOf(training.stats()); private set
+    var reports by mutableStateOf<List<ScanReport>>(emptyList()); private set
     var samplesEnabled by mutableStateOf(training.samplesEnabled); private set
     /** URIs marked for deletion. Set once per item, so the user's own changes survive live updates. */
     val marked = mutableStateMapOf<String, Boolean>()
+
+    init { viewModelScope.launch(Dispatchers.IO) { reports = engine.reports() } }
 
     private val dismissed = mutableSetOf<String>()
     private var pending: List<Pending> = emptyList()
     private var cancelled = false
 
-    /** Progressive: results appear every second or so while the scan keeps running (newest media first). */
+    /**
+     * Saved results from earlier scans (and the nightly scan) show at once; only new or changed photos and
+     * videos are decoded, newest first, and the list keeps updating while that runs.
+     */
     fun scan() = viewModelScope.launch {
         if (scanning) return@launch
         scanning = true; cancelled = false; marked.clear(); dismissed.clear(); analyzedCount = 0
@@ -73,7 +80,14 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         val seen = ArrayList<MediaItem>()
         var lastPublish = 0L
         val all = withContext(Dispatchers.IO) {
-            scanner.scan(
+            engine.run(
+                source = "manual",
+                thresholds = settings.thresholds,
+                onCached = { cached ->
+                    synchronized(seen) { seen += cached }
+                    analyzedCount = seen.size
+                    publish(synchronized(seen) { seen.toList() })
+                },
                 onItem = { item ->
                     synchronized(seen) { seen += item }
                     analyzedCount = seen.size
@@ -87,6 +101,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         publish(all)
         training.logScan(MiniJson.obj("ts" to System.currentTimeMillis(), "items" to all.size, "photoGroups" to photoGroups.size,
             "videoGroups" to videoGroups.size, "blurry" to blurry.size, "ms" to System.currentTimeMillis() - started))
+        reports = engine.reports()
         scanning = false; scanned = true
     }
 

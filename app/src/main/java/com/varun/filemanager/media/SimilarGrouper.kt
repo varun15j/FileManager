@@ -18,6 +18,8 @@ data class MediaItem(
     val blur: Double = Double.NaN,
     /** People and vehicles found by the on-device detector (empty if not run or none found). */
     val objects: List<DetectedObject> = emptyList(),
+    /** Last-modified time from MediaStore; with the size it tells us a cached result is stale. */
+    val modifiedMs: Long = 0,
 ) {
     val pixels: Long get() = width.toLong() * height
 }

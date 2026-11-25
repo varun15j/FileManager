@@ -43,3 +43,10 @@ Status: M1 code is written but not yet compiled locally (no Android SDK in the a
 ## Settings and build numbers (PR 5)
 - Settings tab: similarity thresholds (`media/Thresholds`, stored in SharedPreferences, applied on the next analysis), training samples switch, build info.
 - Build number: `app/version.properties` (`buildNumber=N`) feeds `versionCode`, `versionName` (0.1.N) and `BuildConfig`. It goes up by 1 in every pull request, not every commit; a CI job fails a PR that does not raise it. The Settings screen shows the build number and git commit.
+
+## Scan cache and nightly scan (PR 6)
+- `media/AnalysisDb` (SQLite) keeps one row per photo/video (hashes, blur, detected objects, size, modified time) and a `reports` table (last 60 scans: new vs reused, groups found, complete or interrupted).
+- `media/ScanPlanner` compares what MediaStore lists now with the saved rows: unchanged items are reused, new or changed ones are analyzed newest first, vanished ones are removed. Rows are saved every 20 items, so a stopped scan resumes where it left off.
+- `media/ScanEngine` runs the plan. The Analyze button shows every saved result immediately, then keeps adding newly analyzed items.
+- `work/ScanWorker` (WorkManager) runs daily at about 02:00 while the device is charging and idle, using the same engine; the system can stop it and it retries. It can be turned off in Settings, where the last scan reports are listed. It needs all-files access.
+- Build number 6.

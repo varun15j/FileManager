@@ -21,6 +21,7 @@ import android.os.Bundle
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.varun.filemanager.work.ScanScheduler.apply(this, com.varun.filemanager.ui.AppSettings(application).backgroundScan)
         setContent {
             MaterialTheme {
                 var granted by remember { mutableStateOf(hasAllFilesAccess()) }

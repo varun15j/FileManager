@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.varun.filemanager.BuildConfig
+import com.varun.filemanager.work.ScanScheduler
 import com.varun.filemanager.media.Thresholds
 import kotlin.math.roundToInt
 
@@ -17,6 +18,10 @@ import kotlin.math.roundToInt
 class AppSettings(app: Application) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     var thresholds by mutableStateOf(load()); private set
+    /** Nightly scan while charging and idle. */
+    var backgroundScan by mutableStateOf(prefs.getBoolean("backgroundScan", true)); private set
+
+    fun enableBackgroundScan(on: Boolean) { backgroundScan = on; prefs.edit().putBoolean("backgroundScan", on).apply() }
 
     private fun load() = Thresholds(
         prefs.getInt("maxHamming", 10), prefs.getInt("sceneHamming", 20),
@@ -35,6 +40,7 @@ class AppSettings(app: Application) {
 @Composable
 fun SettingsScreen(vm: CleanupViewModel) {
     val s = vm.settings
+    val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val t = s.thresholds
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
@@ -46,6 +52,17 @@ fun SettingsScreen(vm: CleanupViewModel) {
         Slide("Blur limit", "${t.blurThreshold.toInt()} (higher = more photos flagged)", t.blurThreshold.toFloat(), 5f..300f) { s.update(t.copy(blurThreshold = it.toDouble())) }
         Text("Changes apply to the next analysis.", style = MaterialTheme.typography.bodySmall)
         OutlinedButton({ s.reset() }, Modifier.padding(top = 8.dp)) { Text("Reset to defaults") }
+
+        Section("Background scan")
+        Row {
+            Switch(s.backgroundScan, { s.enableBackgroundScan(it); ScanScheduler.apply(ctx, it) })
+            Text("  Scan new photos and videos at night while charging and idle")
+        }
+        Text("Results are saved, so Analyze shows them straight away and only checks new or changed files.", style = MaterialTheme.typography.bodySmall)
+        if (vm.reports.isEmpty()) Text("No scans yet.", style = MaterialTheme.typography.bodySmall)
+        vm.reports.take(5).forEach { r ->
+            Text("${fmtTime(r.finishedAt)} · ${r.source} · ${r.status}: ${r.analyzed} new of ${r.total}, ${r.photoGroups} photo groups, ${r.videoGroups} video groups, ${r.blurry} blurry", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+        }
 
         Section("Training data")
         Row {
@@ -72,3 +89,5 @@ private fun Slide(label: String, value: String, v: Float, range: ClosedFloatingP
     Text("$label: $value", style = MaterialTheme.typography.bodyMedium)
     Slider(v, onChange, valueRange = range)
 }
+
+private fun fmtTime(ms: Long): String = java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(ms))
