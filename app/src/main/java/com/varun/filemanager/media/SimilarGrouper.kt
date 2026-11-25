@@ -16,6 +16,8 @@ data class MediaItem(
     /** Photos: one dHash. Videos: one dHash per sampled frame (same sample points for every video). */
     val hashes: LongArray = LongArray(0),
     val blur: Double = Double.NaN,
+    /** People and vehicles found by the on-device detector (empty if not run or none found). */
+    val objects: List<DetectedObject> = emptyList(),
 ) {
     val pixels: Long get() = width.toLong() * height
 }
@@ -29,6 +31,8 @@ class SimilarGrouper(
     /** Photos only count as similar if taken within this window. Null disables the time check. */
     private val photoWindowMs: Long? = 10 * 60_000L,
     private val maxVideoDurationDiffRatio: Double = 0.03,
+    /** Looser hash limit that is accepted only when both photos show the same people/vehicles in the same places. */
+    private val sceneMaxHamming: Int = 20,
 ) {
     fun groupPhotos(items: List<MediaItem>): List<SimilarGroup> {
         val photos = items.filter { !it.isVideo && it.hashes.isNotEmpty() }.sortedBy { it.dateTakenMs }
@@ -36,7 +40,8 @@ class SimilarGrouper(
         for (i in photos.indices) {
             for (j in i + 1 until photos.size) {
                 if (photoWindowMs != null && photos[j].dateTakenMs - photos[i].dateTakenMs > photoWindowMs) break
-                if (ImageMetrics.hamming(photos[i].hashes[0], photos[j].hashes[0]) <= maxHamming) uf.union(i, j)
+                val d = ImageMetrics.hamming(photos[i].hashes[0], photos[j].hashes[0])
+                if (d <= maxHamming || (d <= sceneMaxHamming && SceneMatcher.sameScene(photos[i].objects, photos[j].objects))) uf.union(i, j)
             }
         }
         return toGroups(photos, uf)

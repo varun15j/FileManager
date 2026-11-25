@@ -11,10 +11,12 @@ import android.provider.MediaStore
 
 /** Reads photos and videos from MediaStore and computes hashes/blur from small decoded copies. */
 class MediaScanner(private val context: Context) {
+    private var tagger: ObjectTagger? = null
     private val resolver: ContentResolver get() = context.contentResolver
 
     fun scan(onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }, isCancelled: () -> Boolean = { false }): List<MediaItem> {
         val raw = query(false) + query(true)
+        tagger = ObjectTagger(context)
         val out = ArrayList<MediaItem>(raw.size)
         raw.forEachIndexed { i, item ->
             if (isCancelled()) return out
@@ -23,6 +25,7 @@ class MediaScanner(private val context: Context) {
             if (analyzed != null) out += analyzed
         }
         onProgress(raw.size, raw.size)
+        tagger?.close(); tagger = null
         return out
     }
 
@@ -61,8 +64,9 @@ class MediaScanner(private val context: Context) {
 
     private fun analyzePhoto(item: MediaItem): MediaItem? {
         val bmp = decodeSampled(Uri.parse(item.uri), 256) ?: return null
+        val objects = tagger?.detect(bmp) ?: emptyList()
         val gray = bmp.toGray(); bmp.recycle()
-        return item.copy(hashes = longArrayOf(ImageMetrics.dHash(gray)), blur = ImageMetrics.blurScore(gray))
+        return item.copy(hashes = longArrayOf(ImageMetrics.dHash(gray)), blur = ImageMetrics.blurScore(gray), objects = objects)
     }
 
     private fun analyzeVideo(item: MediaItem): MediaItem? {
