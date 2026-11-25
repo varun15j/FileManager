@@ -33,3 +33,9 @@ Status: M1 code is written but not yet compiled locally (no Android SDK in the a
 
 ## Object-aware similarity (PR 3)
 `media/ObjectTagger` runs the COCO EfficientDet-Lite0 detector (Apache-2.0, model file taken from the ADAS_cam project) through MediaPipe Tasks to find people and vehicles with normalized positions. `SceneMatcher` treats two photos as the same scene when the number of people and vehicles matches and each object sits in a similar place and size. `SimilarGrouper` accepts a looser hash distance (20 instead of 10) only in that case, so shots where the subject moved a little, or the framing changed, still group. The review cards show where people stand in the frame. The ADAS_cam `adas_india` model is not used: it was trained on dashcam frames and scored 26% mAP50 on its own test set.
+
+## Training log and progressive scan (PR 4)
+- Scanning is progressive: newest media first, groups regrouped every ~1.5 s while it runs, and the user's check marks survive the updates (`putIfAbsent`).
+- `training/TrainingStore` writes to `Documents/FileManagerTraining` (outside app storage, so it survives uninstall; needs all-files access, otherwise it falls back to app storage). `decisions.jsonl` has one flat line per decision (approved / rejected / cancelled, items, deleted, kept, overrides), `groups.jsonl` has what the analyzer saw, `scans.jsonl` has scan summaries, and `samples/` holds 256 px thumbnails (switchable in the Training tab).
+- Accuracy = approved / (approved + rejected) per kind; "overrides" counts items where the user changed the pre-selection. Stats are re-read from the folder at startup, so a reinstall picks up earlier feedback.
+- `tools/pull-training-data.ps1` copies the folder to the PC for training. Thresholds are not auto-tuned yet; the data is what a later tuning step needs.
