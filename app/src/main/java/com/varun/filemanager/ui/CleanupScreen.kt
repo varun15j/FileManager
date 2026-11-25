@@ -3,6 +3,7 @@ package com.varun.filemanager.ui
 import android.app.Application
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -23,31 +24,76 @@ import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import com.varun.filemanager.core.Trash
 import com.varun.filemanager.media.*
+import com.varun.filemanager.training.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** A reviewed group waiting for the system delete dialog result. */
+private data class Pending(val kind: String, val groupId: String, val items: Int, val deleted: Int, val kept: Int, val overrides: Int)
+
 class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     private val trash = Trash(File(app.getExternalFilesDir(null), "trash"))
     private val grouper = SimilarGrouper()
+    private val scanner = MediaScanner(app)
+
+    /** Documents/FileManagerTraining survives uninstall. Without all-files access we fall back to app storage (lost on uninstall). */
+    val training: TrainingStore = TrainingStore(
+        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "FileManagerTraining")
+            .takeIf { runCatching { it.mkdirs(); it.canWrite() }.getOrDefault(false) }
+            ?: File(app.getExternalFilesDir(null), "FileManagerTraining")
+    )
+
     var scanning by mutableStateOf(false); private set
     var progress by mutableStateOf(0f); private set
+    var analyzedCount by mutableIntStateOf(0); private set
     var scanned by mutableStateOf(false); private set
     var photoGroups by mutableStateOf<List<SimilarGroup>>(emptyList()); private set
     var videoGroups by mutableStateOf<List<SimilarGroup>>(emptyList()); private set
     var blurry by mutableStateOf<List<MediaItem>>(emptyList()); private set
-    /** URIs marked for deletion. Keepers are never pre-marked, blurry photos start unmarked: the user opts in. */
+    var stats by mutableStateOf(training.stats()); private set
+    var samplesEnabled by mutableStateOf(training.samplesEnabled); private set
+    /** URIs marked for deletion. Set once per item, so the user's own changes survive live updates. */
     val marked = mutableStateMapOf<String, Boolean>()
 
+    private val dismissed = mutableSetOf<String>()
+    private var pending: List<Pending> = emptyList()
+    private var cancelled = false
+
+    /** Progressive: results appear every second or so while the scan keeps running (newest media first). */
     fun scan() = viewModelScope.launch {
-        scanning = true; marked.clear()
-        val items = withContext(Dispatchers.IO) {
-            MediaScanner(getApplication()).scan(onProgress = { d, t -> progress = if (t == 0) 1f else d / t.toFloat() })
+        if (scanning) return@launch
+        scanning = true; cancelled = false; marked.clear(); dismissed.clear(); analyzedCount = 0
+        photoGroups = emptyList(); videoGroups = emptyList(); blurry = emptyList()
+        val started = System.currentTimeMillis()
+        val seen = ArrayList<MediaItem>()
+        var lastPublish = 0L
+        val all = withContext(Dispatchers.IO) {
+            scanner.scan(
+                onItem = { item ->
+                    synchronized(seen) { seen += item }
+                    analyzedCount = seen.size
+                    val now = System.currentTimeMillis()
+                    if (now - lastPublish > 1500) { lastPublish = now; publish(synchronized(seen) { seen.toList() }) }
+                },
+                onProgress = { d, t -> progress = if (t == 0) 1f else d / t.toFloat() },
+                isCancelled = { cancelled },
+            )
         }
-        photoGroups = grouper.groupPhotos(items); videoGroups = grouper.groupVideos(items); blurry = grouper.blurry(items)
-        (photoGroups + videoGroups).forEach { g -> g.items.forEach { marked[it.uri] = it !== g.keeper } }
+        publish(all)
+        training.logScan(MiniJson.obj("ts" to System.currentTimeMillis(), "items" to all.size, "photoGroups" to photoGroups.size,
+            "videoGroups" to videoGroups.size, "blurry" to blurry.size, "ms" to System.currentTimeMillis() - started))
         scanning = false; scanned = true
+    }
+
+    fun cancelScan() { cancelled = true }
+
+    private fun publish(items: List<MediaItem>) {
+        photoGroups = grouper.groupPhotos(items).filter { it.id !in dismissed }
+        videoGroups = grouper.groupVideos(items).filter { it.id !in dismissed }
+        blurry = grouper.blurry(items).filter { "blur:${it.uri}" !in dismissed }
+        (photoGroups + videoGroups).forEach { g -> g.items.forEach { marked.putIfAbsent(it.uri, it !== g.keeper) } }
     }
 
     fun toggle(i: MediaItem) { marked[i.uri] = marked[i.uri] != true }
@@ -57,17 +103,72 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     fun safe() = (photoGroups + videoGroups).all { g -> g.items.any { marked[it.uri] != true } }
     fun reclaimable() = markedItems().sumOf { it.sizeBytes }
 
-    /** Android 11+: system trash request (user confirms in a system dialog, items stay recoverable). */
-    fun trashRequest(): android.content.IntentSender? =
-        if (Build.VERSION.SDK_INT >= 30)
+    fun setSamples(on: Boolean) { training.samplesEnabled = on; samplesEnabled = on }
+
+    /** User says this group is not really similar / this photo is fine. Logged as feedback and hidden. */
+    fun reject(g: SimilarGroup, kind: String) = viewModelScope.launch {
+        dismissed += g.id
+        withContext(Dispatchers.IO) { logGroup(kind, g); training.logDecision(Decision(now(), kind, g.id, "rejected", g.items.size, 0, g.items.size, 0)) }
+        if (kind == "photo") photoGroups = photoGroups.filter { it.id != g.id } else videoGroups = videoGroups.filter { it.id != g.id }
+        stats = training.stats()
+    }
+
+    fun keepBlurry(i: MediaItem) = viewModelScope.launch {
+        dismissed += "blur:${i.uri}"
+        withContext(Dispatchers.IO) { training.logDecision(Decision(now(), "blur", "blur-${i.id}", "rejected", 1, 0, 1, 0)); saveSamples("blur-${i.id}", listOf(i)) }
+        blurry = blurry.filter { it.uri != i.uri }; stats = training.stats()
+    }
+
+    /** Starts deletion: logs what the analyzer found and the user's choices, saves samples, then asks Android to trash. */
+    fun requestDelete(): android.content.IntentSender? {
+        val toDelete = markedItems().map { it.uri }.toSet()
+        pending = (photoGroups.map { "photo" to it } + videoGroups.map { "video" to it }).mapNotNull { (kind, g) ->
+            val del = g.items.count { it.uri in toDelete }
+            if (del == 0) null else Pending(kind, g.id, g.items.size, del, g.items.size - del, g.items.count { (it.uri in toDelete) == (it === g.keeper) })
+        } + blurry.filter { it.uri in toDelete }.map { Pending("blur", "blur-${it.id}", 1, 1, 0, 0) }
+        viewModelScope.launch(Dispatchers.IO) {
+            (photoGroups.map { "photo" to it } + videoGroups.map { "video" to it }).filter { (_, g) -> g.items.any { it.uri in toDelete } }.forEach { (k, g) -> logGroup(k, g) }
+            blurry.filter { it.uri in toDelete }.forEach { saveSamples("blur-${it.id}", listOf(it)) }
+        }
+        return if (Build.VERSION.SDK_INT >= 30)
             MediaStore.createTrashRequest(getApplication<Application>().contentResolver, markedItems().map { Uri.parse(it.uri) }, true).intentSender
         else null
+    }
+
+    /** Called with the outcome of the system dialog. Logs approved or cancelled, then refreshes. */
+    fun deleteFinished(ok: Boolean) = viewModelScope.launch {
+        withContext(Dispatchers.IO) {
+            pending.forEach { training.logDecision(Decision(now(), it.kind, it.groupId, if (ok) "approved" else "cancelled", it.items, it.deleted, it.kept, it.overrides)) }
+        }
+        pending = emptyList(); stats = training.stats()
+        if (ok) scan()
+    }
 
     /** Android 8-10 fallback: move files to the app trash. Called only after the user confirms. */
     fun legacyTrash() = viewModelScope.launch {
         withContext(Dispatchers.IO) { markedItems().forEach { i -> i.path?.let { trash.moveToTrash(File(it)) } } }
-        scan()
+        deleteFinished(true)
     }
+
+    private fun logGroup(kind: String, g: SimilarGroup) {
+        training.logGroup(MiniJson.obj(
+            "ts" to now(), "kind" to kind, "groupId" to g.id, "keeper" to g.keeper.uri,
+            "items" to g.items.map { i ->
+                mapOf("uri" to i.uri, "name" to i.name, "size" to i.sizeBytes, "w" to i.width, "h" to i.height, "takenMs" to i.dateTakenMs,
+                    "durationMs" to i.durationMs, "hashes" to i.hashes, "blur" to (if (i.blur.isNaN()) null else i.blur),
+                    "objects" to i.objects.map { o -> mapOf("kind" to o.kind.name, "label" to o.label, "cx" to o.cx, "cy" to o.cy, "w" to o.w, "h" to o.h) },
+                    "markedForDelete" to (marked[i.uri] == true))
+            },
+        ))
+        saveSamples(g.id, g.items)
+    }
+
+    private fun saveSamples(groupId: String, items: List<MediaItem>) {
+        if (!training.samplesEnabled || training.hasSample(groupId)) return
+        items.forEachIndexed { n, i -> scanner.thumbnailJpeg(i)?.let { training.saveSample(groupId, n, it) } }
+    }
+
+    private fun now() = System.currentTimeMillis()
 }
 
 @Composable
@@ -76,34 +177,42 @@ fun CleanupScreen(vm: CleanupViewModel) {
     var confirm by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val loader = remember { ImageLoader.Builder(ctx).components { add(VideoFrameDecoder.Factory()) }.build() }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { vm.scan() }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { vm.deleteFinished(it.resultCode == android.app.Activity.RESULT_OK) }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text("Photo & video cleanup", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 16.dp))
-        Button(onClick = { vm.scan() }, enabled = !vm.scanning, modifier = Modifier.padding(vertical = 8.dp)) {
-            Text(if (vm.scanning) "Analyzing…" else "Analyze photos and videos")
+        Row(Modifier.padding(vertical = 8.dp)) {
+            Button(onClick = { vm.scan() }, enabled = !vm.scanning) { Text(if (vm.scanning) "Analyzing… ${vm.analyzedCount}" else "Analyze photos and videos") }
+            if (vm.scanning) TextButton(onClick = { vm.cancelScan() }) { Text("Stop") }
         }
-        if (vm.scanning) LinearProgressIndicator(progress = { vm.progress }, modifier = Modifier.fillMaxWidth())
-        TabRow(tab) {
+        if (vm.scanning) {
+            LinearProgressIndicator(progress = { vm.progress }, modifier = Modifier.fillMaxWidth())
+            Text("Results below update while the scan runs.", style = MaterialTheme.typography.bodySmall)
+        }
+        ScrollableTabRow(tab, edgePadding = 0.dp) {
             Tab(tab == 0, { tab = 0 }, text = { Text("Similar (${vm.photoGroups.size})") })
             Tab(tab == 1, { tab = 1 }, text = { Text("Blurry (${vm.blurry.size})") })
             Tab(tab == 2, { tab = 2 }, text = { Text("Videos (${vm.videoGroups.size})") })
+            Tab(tab == 3, { tab = 3 }, text = { Text("Training") })
         }
-        LazyColumn(Modifier.weight(1f)) {
+        if (tab == 3) TrainingPanel(vm) else LazyColumn(Modifier.weight(1f)) {
             when (tab) {
-                0 -> items(vm.photoGroups) { GroupCard(it, vm, loader) }
-                2 -> items(vm.videoGroups) { GroupCard(it, vm, loader) }
-                else -> items(vm.blurry, key = { it.uri }) { i ->
+                0 -> items(vm.photoGroups) { GroupCard(it, "photo", vm, loader) }
+                2 -> items(vm.videoGroups) { GroupCard(it, "video", vm, loader) }
+                else -> items(vm.blurry) { i ->
                     Row(Modifier.padding(vertical = 4.dp)) {
                         Checkbox(vm.marked[i.uri] == true, { vm.toggle(i) })
                         Thumb(i, loader)
-                        Column(Modifier.padding(start = 8.dp)) { Text(i.name); Text("${formatSize(i.sizeBytes)} · sharpness ${i.blur.toInt()}", style = MaterialTheme.typography.bodySmall) }
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(i.name); Text("${formatSize(i.sizeBytes)} · sharpness ${i.blur.toInt()}", style = MaterialTheme.typography.bodySmall)
+                            TextButton({ vm.keepBlurry(i) }) { Text("Not blurry, keep") }
+                        }
                     }
                 }
             }
         }
         val n = vm.markedItems().size
-        if (n > 0) {
+        if (n > 0 && tab != 3) {
             Button(onClick = { confirm = true }, enabled = vm.safe(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 Text("Review & delete $n items (${formatSize(vm.reclaimable())})")
             }
@@ -113,11 +222,11 @@ fun CleanupScreen(vm: CleanupViewModel) {
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
         title = { Text("Move ${vm.markedItems().size} items to trash?") },
-        text = { Text("Frees ${formatSize(vm.reclaimable())}. Items go to the trash and can be restored. One item in every group is kept.") },
+        text = { Text("Frees ${formatSize(vm.reclaimable())}. Items go to the trash and can be restored. One item in every group is kept. Your choices are saved to improve the analysis.") },
         confirmButton = {
             TextButton({
                 confirm = false
-                vm.trashRequest()?.let { launcher.launch(IntentSenderRequest.Builder(it).build()) } ?: vm.legacyTrash()
+                vm.requestDelete()?.let { launcher.launch(IntentSenderRequest.Builder(it).build()) } ?: vm.legacyTrash()
             }) { Text("Continue") }
         },
         dismissButton = { TextButton({ confirm = false }) { Text("Cancel") } },
@@ -125,7 +234,26 @@ fun CleanupScreen(vm: CleanupViewModel) {
 }
 
 @Composable
-private fun GroupCard(g: SimilarGroup, vm: CleanupViewModel, loader: ImageLoader) {
+private fun TrainingPanel(vm: CleanupViewModel) {
+    Column(Modifier.padding(top = 12.dp)) {
+        Text("Your feedback improves the analysis.", style = MaterialTheme.typography.titleSmall)
+        Text("Saved in: ${vm.training.dir.path}", style = MaterialTheme.typography.bodySmall)
+        Text("This folder stays after uninstalling and is reloaded when you reinstall.", style = MaterialTheme.typography.bodySmall)
+        Row(Modifier.padding(vertical = 8.dp)) {
+            Switch(vm.samplesEnabled, { vm.setSamples(it) })
+            Text("  Save small sample thumbnails of reviewed photos and videos")
+        }
+        if (vm.stats.byKind.isEmpty()) Text("No feedback yet. Approve or reject groups to start.")
+        vm.stats.byKind.forEach { (kind, s) ->
+            Text("$kind: ${s.approved} approved, ${s.rejected} rejected, ${s.cancelled} cancelled" +
+                (s.accuracy?.let { " · accuracy ${(it * 100).toInt()}%" } ?: "") +
+                (s.overrideRate?.let { " · you changed ${(it * 100).toInt()}% of suggestions" } ?: ""))
+        }
+    }
+}
+
+@Composable
+private fun GroupCard(g: SimilarGroup, kind: String, vm: CleanupViewModel, loader: ImageLoader) {
     Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Column(Modifier.padding(12.dp)) {
             Text("${g.items.size} similar · ${formatSize(g.reclaimableBytes)} reclaimable", style = MaterialTheme.typography.titleSmall)
@@ -141,6 +269,7 @@ private fun GroupCard(g: SimilarGroup, vm: CleanupViewModel, loader: ImageLoader
                 }
             }
             Text("Checked items will be moved to trash", style = MaterialTheme.typography.labelSmall)
+            TextButton({ vm.reject(g, kind) }) { Text("Not similar, keep all") }
         }
     }
 }

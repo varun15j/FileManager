@@ -23,6 +23,8 @@ data class MediaItem(
 }
 
 data class SimilarGroup(val items: List<MediaItem>, val keeper: MediaItem) {
+    /** Stable for the same set of items, used to name log entries and sample folders. */
+    val id: String get() = items.map { it.uri }.sorted().joinToString("|").hashCode().toUInt().toString(16)
     val reclaimableBytes: Long get() = items.filter { it !== keeper }.sumOf { it.sizeBytes }
 }
 

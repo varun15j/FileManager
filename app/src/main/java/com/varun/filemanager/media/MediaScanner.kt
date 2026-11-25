@@ -14,20 +14,38 @@ class MediaScanner(private val context: Context) {
     private var tagger: ObjectTagger? = null
     private val resolver: ContentResolver get() = context.contentResolver
 
-    fun scan(onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }, isCancelled: () -> Boolean = { false }): List<MediaItem> {
-        val raw = query(false) + query(true)
+    /** Analyzes newest items first and calls [onItem] after each one, so the UI can show results while the scan runs. */
+    fun scan(
+        onItem: (MediaItem) -> Unit = {},
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+        isCancelled: () -> Boolean = { false },
+    ): List<MediaItem> {
+        val raw = (query(false) + query(true)).sortedByDescending { it.dateTakenMs }
         tagger = ObjectTagger(context)
         val out = ArrayList<MediaItem>(raw.size)
         raw.forEachIndexed { i, item ->
             if (isCancelled()) return out
             onProgress(i, raw.size)
             val analyzed = runCatching { if (item.isVideo) analyzeVideo(item) else analyzePhoto(item) }.getOrNull()
-            if (analyzed != null) out += analyzed
+            if (analyzed != null) { out += analyzed; onItem(analyzed) }
         }
         onProgress(raw.size, raw.size)
         tagger?.close(); tagger = null
         return out
     }
+
+    /** Small JPEG (about 256 px) for training samples. Null if the item cannot be decoded. */
+    fun thumbnailJpeg(item: MediaItem): ByteArray? = runCatching {
+        val bmp = if (item.isVideo) {
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(context, Uri.parse(item.uri))
+                r.getFrameAtTime(item.durationMs * 300, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?.let { Bitmap.createScaledBitmap(it, 256, (256f * it.height / it.width).toInt().coerceAtLeast(1), true) }
+            } finally { r.release() }
+        } else decodeSampled(Uri.parse(item.uri), 256)
+        bmp?.let { b -> java.io.ByteArrayOutputStream().also { b.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray() }
+    }.getOrNull()
 
     private fun query(video: Boolean): List<MediaItem> {
         val base = if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
