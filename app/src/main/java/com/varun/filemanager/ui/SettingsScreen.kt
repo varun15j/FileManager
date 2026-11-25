@@ -21,7 +21,7 @@ class AppSettings(app: Application) {
     /** Nightly scan while charging and idle. */
     var backgroundScan by mutableStateOf(prefs.getBoolean("backgroundScan", true)); private set
 
-    fun setBackgroundScan(on: Boolean) { backgroundScan = on; prefs.edit().putBoolean("backgroundScan", on).apply() }
+    fun enableBackgroundScan(on: Boolean) { backgroundScan = on; prefs.edit().putBoolean("backgroundScan", on).apply() }
 
     private fun load() = Thresholds(
         prefs.getInt("maxHamming", 10), prefs.getInt("sceneHamming", 20),
@@ -55,7 +55,7 @@ fun SettingsScreen(vm: CleanupViewModel) {
 
         Section("Background scan")
         Row {
-            Switch(s.backgroundScan, { s.setBackgroundScan(it); ScanScheduler.apply(ctx, it) })
+            Switch(s.backgroundScan, { s.enableBackgroundScan(it); ScanScheduler.apply(ctx, it) })
             Text("  Scan new photos and videos at night while charging and idle")
         }
         Text("Results are saved, so Analyze shows them straight away and only checks new or changed files.", style = MaterialTheme.typography.bodySmall)
