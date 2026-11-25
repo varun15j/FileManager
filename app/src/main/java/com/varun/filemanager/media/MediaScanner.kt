@@ -14,25 +14,15 @@ class MediaScanner(private val context: Context) {
     private var tagger: ObjectTagger? = null
     private val resolver: ContentResolver get() = context.contentResolver
 
-    /** Analyzes newest items first and calls [onItem] after each one, so the UI can show results while the scan runs. */
-    fun scan(
-        onItem: (MediaItem) -> Unit = {},
-        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
-        isCancelled: () -> Boolean = { false },
-    ): List<MediaItem> {
-        val raw = (query(false) + query(true)).sortedByDescending { it.dateTakenMs }
-        tagger = ObjectTagger(context)
-        val out = ArrayList<MediaItem>(raw.size)
-        raw.forEachIndexed { i, item ->
-            if (isCancelled()) return out
-            onProgress(i, raw.size)
-            val analyzed = runCatching { if (item.isVideo) analyzeVideo(item) else analyzePhoto(item) }.getOrNull()
-            if (analyzed != null) { out += analyzed; onItem(analyzed) }
-        }
-        onProgress(raw.size, raw.size)
-        tagger?.close(); tagger = null
-        return out
-    }
+    /** All photos and videos MediaStore knows about, newest first. Cheap: no decoding. */
+    fun queryAll(): List<MediaItem> = (query(false) + query(true)).sortedByDescending { it.dateTakenMs }
+
+    /** Decodes and analyzes one item (hashes, blur, people/vehicles). Null if it cannot be read. */
+    fun analyze(item: MediaItem): MediaItem? =
+        runCatching { if (item.isVideo) analyzeVideo(item) else analyzePhoto(item) }.getOrNull()
+
+    fun openTagger() { if (tagger == null) tagger = ObjectTagger(context) }
+    fun closeTagger() { tagger?.close(); tagger = null }
 
     /** Small JPEG (about 256 px) for training samples. Null if the item cannot be decoded. */
     fun thumbnailJpeg(item: MediaItem): ByteArray? = runCatching {
@@ -51,7 +41,7 @@ class MediaScanner(private val context: Context) {
         val base = if (video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val cols = buildList {
             add(MediaStore.MediaColumns._ID); add(MediaStore.MediaColumns.DISPLAY_NAME); add(MediaStore.MediaColumns.SIZE)
-            add(MediaStore.MediaColumns.DATE_ADDED); add(MediaStore.MediaColumns.WIDTH); add(MediaStore.MediaColumns.HEIGHT)
+            add(MediaStore.MediaColumns.DATE_ADDED); add(MediaStore.MediaColumns.DATE_MODIFIED); add(MediaStore.MediaColumns.WIDTH); add(MediaStore.MediaColumns.HEIGHT)
             add(MediaStore.MediaColumns.DATA)
             if (video) add(MediaStore.MediaColumns.DURATION)
             if (android.os.Build.VERSION.SDK_INT >= 29) add(MediaStore.MediaColumns.DATE_TAKEN)
@@ -70,6 +60,7 @@ class MediaScanner(private val context: Context) {
                     name = c.getString(idx(MediaStore.MediaColumns.DISPLAY_NAME)) ?: "",
                     sizeBytes = c.getLong(idx(MediaStore.MediaColumns.SIZE)),
                     dateTakenMs = taken,
+                    modifiedMs = c.getLong(idx(MediaStore.MediaColumns.DATE_MODIFIED)) * 1000,
                     width = c.getInt(idx(MediaStore.MediaColumns.WIDTH)),
                     height = c.getInt(idx(MediaStore.MediaColumns.HEIGHT)),
                     isVideo = video,
