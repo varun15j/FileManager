@@ -66,6 +66,7 @@ private fun AppRoot() {
                 NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Folder, null) }, label = { Text("Files") })
                 NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.ContentCopy, null) }, label = { Text("Duplicates") })
                 NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.PhotoLibrary, null) }, label = { Text("Photos") })
+                NavigationBarItem(tab == 3, { tab = 3 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
             }
         },
     ) { pad ->
@@ -73,7 +74,8 @@ private fun AppRoot() {
             when (tab) {
                 0 -> BrowserScreen(viewModel())
                 1 -> DuplicatesScreen(viewModel())
-                else -> CleanupScreen(viewModel())
+                2 -> CleanupScreen(viewModel())
+                else -> SettingsScreen(viewModel())
             }
         }
     }

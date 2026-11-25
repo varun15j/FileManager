@@ -35,7 +35,10 @@ private data class Pending(val kind: String, val groupId: String, val items: Int
 
 class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     private val trash = Trash(File(app.getExternalFilesDir(null), "trash"))
-    private val grouper = SimilarGrouper()
+    val settings = AppSettings(app)
+    private fun grouper() = settings.thresholds.let {
+        SimilarGrouper(maxHamming = it.maxHamming, photoWindowMs = it.windowMinutes * 60_000L, sceneMaxHamming = it.sceneHamming)
+    }
     private val scanner = MediaScanner(app)
 
     /** Documents/FileManagerTraining survives uninstall. Without all-files access we fall back to app storage (lost on uninstall). */
@@ -90,9 +93,10 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelScan() { cancelled = true }
 
     private fun publish(items: List<MediaItem>) {
+        val grouper = grouper()
         photoGroups = grouper.groupPhotos(items).filter { it.id !in dismissed }
         videoGroups = grouper.groupVideos(items).filter { it.id !in dismissed }
-        blurry = grouper.blurry(items).filter { "blur:${it.uri}" !in dismissed }
+        blurry = grouper.blurry(items, settings.thresholds.blurThreshold).filter { "blur:${it.uri}" !in dismissed }
         (photoGroups + videoGroups).forEach { g -> g.items.forEach { marked.putIfAbsent(it.uri, it !== g.keeper) } }
     }
 
