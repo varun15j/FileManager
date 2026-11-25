@@ -10,3 +10,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.10.2 }
       - run: gradle :app:testDebugUnitTest :app:assembleDebug
+  build-number:
+    # Every pull request must raise the build number in app/version.properties.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: |
+          base=$(git show origin/${{ github.base_ref }}:app/version.properties 2>/dev/null | grep -oP '(?<=buildNumber=)\d+' || echo 0)
+          head=$(grep -oP '(?<=buildNumber=)\d+' app/version.properties)
+          echo "base build $base, this PR $head"
+          [ "$head" -gt "$base" ] || { echo "Increase buildNumber in app/version.properties"; exit 1; }

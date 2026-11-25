@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+val buildNumber: Int = java.util.Properties().apply { file("version.properties").inputStream().use { load(it) } }.getProperty("buildNumber").trim().toInt()
+val gitSha: String = try {
+    providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }.standardOutput.asText.get().trim()
+} catch (e: Exception) { "unknown" }
+
 android {
     namespace = "com.varun.filemanager"
     compileSdk = 35
@@ -10,10 +15,12 @@ android {
         applicationId = "com.varun.filemanager"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = buildNumber
+        versionName = "0.1.$buildNumber"
+        buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

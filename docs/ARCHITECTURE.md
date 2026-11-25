@@ -39,3 +39,7 @@ Status: M1 code is written but not yet compiled locally (no Android SDK in the a
 - `training/TrainingStore` writes to `Documents/FileManagerTraining` (outside app storage, so it survives uninstall; needs all-files access, otherwise it falls back to app storage). `decisions.jsonl` has one flat line per decision (approved / rejected / cancelled, items, deleted, kept, overrides), `groups.jsonl` has what the analyzer saw, `scans.jsonl` has scan summaries, and `samples/` holds 256 px thumbnails (switchable in the Training tab).
 - Accuracy = approved / (approved + rejected) per kind; "overrides" counts items where the user changed the pre-selection. Stats are re-read from the folder at startup, so a reinstall picks up earlier feedback.
 - `tools/pull-training-data.ps1` copies the folder to the PC for training. Thresholds are not auto-tuned yet; the data is what a later tuning step needs.
+
+## Settings and build numbers (PR 5)
+- Settings tab: similarity thresholds (`media/Thresholds`, stored in SharedPreferences, applied on the next analysis), training samples switch, build info.
+- Build number: `app/version.properties` (`buildNumber=N`) feeds `versionCode`, `versionName` (0.1.N) and `BuildConfig`. It goes up by 1 in every pull request, not every commit; a CI job fails a PR that does not raise it. The Settings screen shows the build number and git commit.
