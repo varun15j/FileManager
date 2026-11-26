@@ -50,3 +50,6 @@ Status: M1 code is written but not yet compiled locally (no Android SDK in the a
 - `media/ScanEngine` runs the plan. The Analyze button shows every saved result immediately, then keeps adding newly analyzed items.
 - `work/ScanWorker` (WorkManager) runs daily at about 02:00 while the device is charging and idle, using the same engine; the system can stop it and it retries. It can be turned off in Settings, where the last scan reports are listed. It needs all-files access.
 - Build number 6.
+
+## App icon (PR 7)
+Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow sparkles for the AI part and a green check badge for "fixed", on an indigo gradient. Includes a monochrome layer for themed icons (Android 13+). Source preview in `docs/icon/`. Build number 7.
