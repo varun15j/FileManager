@@ -22,7 +22,7 @@ data class ScanReport(
  * SQLite store of analysis results, one row per photo/video, so a scan only has to decode new or changed
  * files. Rows are written as each item is analyzed, so a scan that was stopped carries on where it left off.
  */
-class AnalysisDb(private val appContext: Context, private val mirror: File? = defaultMirror()) : SQLiteOpenHelper(appContext, DbMirror.DB_NAME, null, 2) {
+class AnalysisDb(private val appContext: Context, private val mirror: File? = defaultMirror()) : SQLiteOpenHelper(appContext, DbMirror.DB_NAME, null, 3) {
     private val localFile: File get() = appContext.getDatabasePath(DbMirror.DB_NAME)
 
     init { if (!localFile.exists()) restoreFromMirror() }
@@ -66,7 +66,7 @@ class AnalysisDb(private val appContext: Context, private val mirror: File? = de
         db.execSQL("""CREATE TABLE items(
             uri TEXT PRIMARY KEY, id INTEGER, video INTEGER, path TEXT, name TEXT, size INTEGER,
             taken INTEGER, modified INTEGER, w INTEGER, h INTEGER, duration INTEGER,
-            hashes TEXT, blur REAL, objects TEXT, analyzed_at INTEGER, faces TEXT, av INTEGER DEFAULT 0)""")
+            hashes TEXT, blur REAL, objects TEXT, analyzed_at INTEGER, faces TEXT, av INTEGER DEFAULT 0, emb BLOB)""")
         db.execSQL("CREATE INDEX items_taken ON items(taken DESC)")
         db.execSQL("""CREATE TABLE reports(
             id INTEGER PRIMARY KEY AUTOINCREMENT, started INTEGER, finished INTEGER, source TEXT, status TEXT,
@@ -79,12 +79,13 @@ class AnalysisDb(private val appContext: Context, private val mirror: File? = de
             db.execSQL("ALTER TABLE items ADD COLUMN faces TEXT")
             db.execSQL("ALTER TABLE items ADD COLUMN av INTEGER DEFAULT 0")
         }
+        if (old < 3) db.execSQL("ALTER TABLE items ADD COLUMN emb BLOB")
     }
 
     /** All saved results, keyed by uri, newest first. */
     fun loadAll(): Map<String, MediaItem> {
         val out = LinkedHashMap<String, MediaItem>()
-        readableDatabase.rawQuery("SELECT uri,id,video,path,name,size,taken,modified,w,h,duration,hashes,blur,objects,faces,av FROM items ORDER BY taken DESC", null).use { c ->
+        readableDatabase.rawQuery("SELECT uri,id,video,path,name,size,taken,modified,w,h,duration,hashes,blur,objects,faces,av,emb FROM items ORDER BY taken DESC", null).use { c ->
             while (c.moveToNext()) {
                 val uri = c.getString(0)
                 out[uri] = MediaItem(
@@ -92,7 +93,7 @@ class AnalysisDb(private val appContext: Context, private val mirror: File? = de
                     dateTakenMs = c.getLong(6), width = c.getInt(8), height = c.getInt(9), isVideo = c.getInt(2) == 1,
                     durationMs = c.getLong(10), hashes = ItemCodec.parseHashes(c.getString(11)),
                     blur = if (c.isNull(12)) Double.NaN else c.getDouble(12), objects = ItemCodec.parseObjects(c.getString(13)),
-                    modifiedMs = c.getLong(7), faces = ItemCodec.parseFaces(c.getString(14)), analysisVersion = c.getInt(15),
+                    modifiedMs = c.getLong(7), faces = ItemCodec.parseFaces(c.getString(14)), analysisVersion = c.getInt(15), embedding = if (c.isNull(16)) null else c.getBlob(16),
                 )
             }
         }
@@ -112,6 +113,7 @@ class AnalysisDb(private val appContext: Context, private val mirror: File? = de
                 if (i.blur.isNaN()) putNull("blur") else put("blur", i.blur)
                 put("objects", ItemCodec.objects(i.objects)); put("analyzed_at", now)
                 put("faces", ItemCodec.faces(i.faces)); put("av", i.analysisVersion)
+                if (i.embedding == null) putNull("emb") else put("emb", i.embedding)
             }, SQLiteDatabase.CONFLICT_REPLACE)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }

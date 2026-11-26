@@ -13,6 +13,7 @@ import android.provider.MediaStore
 class MediaScanner(private val context: Context) {
     private var tagger: ObjectTagger? = null
     private var faceTagger: FaceTagger? = null
+    private var embedder: ImageEmbedderTagger? = null
     private val resolver: ContentResolver get() = context.contentResolver
 
     /** All photos and videos MediaStore knows about, newest first. Cheap: no decoding. */
@@ -22,11 +23,21 @@ class MediaScanner(private val context: Context) {
     fun analyze(item: MediaItem): MediaItem? =
         runCatching { if (item.isVideo) analyzeVideo(item) else analyzePhoto(item) }.getOrNull()
 
-    fun openTagger(faces: Boolean = true) {
+    fun openTagger(faces: Boolean = true, embeddings: Boolean = false) {
         if (tagger == null) tagger = ObjectTagger(context)
         if (faces && faceTagger == null) faceTagger = FaceTagger(context)
+        if (embeddings && embedder == null) embedder = ImageEmbedderTagger(context)
     }
-    fun closeTagger() { tagger?.close(); tagger = null; faceTagger?.close(); faceTagger = null }
+    fun closeTagger() { tagger?.close(); tagger = null; faceTagger?.close(); faceTagger = null; embedder?.close(); embedder = null }
+
+    /** For a sample photo the user picked: its embedding and a 512 px JPEG copy to keep in the training folder. */
+    fun sampleFor(uri: String): Pair<FloatArray, ByteArray>? = runCatching {
+        val bmp = decodeSampled(Uri.parse(uri), 512) ?: return null
+        val emb = embedder?.embed(bmp)
+        val jpeg = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+        bmp.recycle()
+        emb?.let { it to jpeg }
+    }.getOrNull()
 
     /** Small JPEG (about 256 px) for training samples. Null if the item cannot be decoded. */
     fun thumbnailJpeg(item: MediaItem): ByteArray? = runCatching {
@@ -79,6 +90,12 @@ class MediaScanner(private val context: Context) {
 
     private fun analyzePhoto(item: MediaItem): MediaItem? {
         val bmp = decodeSampled(Uri.parse(item.uri), 256) ?: return null
+        val embedding = embedder?.takeIf { it.available }?.embed(bmp)?.let { Embeddings.quantize(it) } ?: item.embedding
+        // Already analyzed with the current analysis (only the embedding is missing): keep hashes, blur, objects and faces.
+        if (item.hashes.isNotEmpty() && item.analysisVersion >= ScanPlanner.ANALYSIS_VERSION) {
+            bmp.recycle()
+            return item.copy(embedding = embedding)
+        }
         val objects = tagger?.detect(bmp) ?: emptyList()
         // Faces are small in a 256 px picture and were almost never found, so they get a larger copy.
         val faces = faceTagger?.takeIf { it.available }?.let { ft ->
@@ -86,7 +103,7 @@ class MediaScanner(private val context: Context) {
         } ?: emptyList()
         val gray = bmp.toGray(); bmp.recycle()
         return item.copy(hashes = longArrayOf(ImageMetrics.dHash(gray)), blur = ImageMetrics.blurScore(gray), objects = objects,
-            faces = faces, analysisVersion = if (faceTagger?.available == true) ScanPlanner.ANALYSIS_VERSION else 1)
+            faces = faces, analysisVersion = if (faceTagger?.available == true) ScanPlanner.ANALYSIS_VERSION else 1, embedding = embedding)
     }
 
     private fun analyzeVideo(item: MediaItem): MediaItem? {

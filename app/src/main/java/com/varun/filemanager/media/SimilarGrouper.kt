@@ -24,6 +24,8 @@ data class MediaItem(
     val faces: List<FaceInfo> = emptyList(),
     /** Which analysis produced this result; older results are re-analyzed when a newer analysis adds data. */
     val analysisVersion: Int = 0,
+    /** Quantized image embedding (see [Embeddings]); only computed once the user has a custom category. */
+    val embedding: ByteArray? = null,
 ) {
     val pixels: Long get() = width.toLong() * height
 }

@@ -7,6 +7,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,12 +43,10 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = ScanEngine(app)
     private val scanner = engine.scanner
 
-    /** Documents/FileManagerTraining survives uninstall. Without all-files access we fall back to app storage (lost on uninstall). */
-    val training: TrainingStore = TrainingStore(
-        File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "FileManagerTraining")
-            .takeIf { runCatching { it.mkdirs(); it.canWrite() }.getOrDefault(false) }
-            ?: File(app.getExternalFilesDir(null), "FileManagerTraining")
-    )
+    val training: TrainingStore = TrainingStore(TrainingDir.resolve(app))
+    val categoryStore = CategoryStore(training.dir)
+    /** Separate scanner for sample photos, so picking samples never disturbs a running scan. */
+    private val sampleScanner = MediaScanner(app)
 
     var scanning by mutableStateOf(false); private set
     var progress by mutableStateOf(0f); private set
@@ -60,7 +59,15 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     var eyesClosed by mutableStateOf<List<MediaItem>>(emptyList()); private set
     var blurryFace by mutableStateOf<List<MediaItem>>(emptyList()); private set
     var sadFace by mutableStateOf<List<MediaItem>>(emptyList()); private set
-    private fun faceLists() = listOf("eyes" to eyesClosed, "faceblur" to blurryFace, "sad" to sadFace)
+    /** Custom categories the user taught the app, and the photos that match each (by category id). */
+    var categories by mutableStateOf<List<Category>>(emptyList()); private set
+    var categoryMatches by mutableStateOf<Map<String, List<MediaItem>>>(emptyMap()); private set
+    /** Sample photos picked for the next category. */
+    val basket = mutableStateListOf<Pair<String, String>>()
+    var creating by mutableStateOf(false); private set
+    private var lastItems: List<MediaItem> = emptyList()
+    private fun faceLists() = listOf("eyes" to eyesClosed, "faceblur" to blurryFace, "sad" to sadFace) +
+        categories.map { "cat_${it.id}" to (categoryMatches[it.id] ?: emptyList()) }
     var stats by mutableStateOf(training.stats()); private set
     var reports by mutableStateOf<List<ScanReport>>(emptyList()); private set
     var samplesEnabled by mutableStateOf(training.samplesEnabled); private set
@@ -70,6 +77,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch(Dispatchers.IO) {
             reports = engine.reports()
+            categories = categoryStore.list()
             // Show what earlier scans (and a restored backup) already know, before anything is scanned again.
             val saved = runCatching { engine.cached() }.getOrDefault(emptyList())
             if (saved.isNotEmpty() && !scanning) { analyzedCount = saved.size; publish(saved); scanned = true }
@@ -96,6 +104,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
                 source = "manual",
                 thresholds = settings.thresholds,
                 detectFaces = settings.faceDetection,
+                embeddings = categories.isNotEmpty(),
                 onCached = { cached ->
                     synchronized(seen) { cached.forEach { seen[it.uri] = it } }
                     analyzedCount = seen.size
@@ -125,11 +134,68 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         photoGroups = grouper.groupPhotos(items).filter { it.id !in dismissed }
         videoGroups = grouper.groupVideos(items).filter { it.id !in dismissed }
         blurry = grouper.blurry(items, settings.thresholds.blurThreshold).filter { "blur:${it.uri}" !in dismissed }
+        lastItems = items
+        computeMatches()
         val photos = items.filter { !it.isVideo && it.faces.isNotEmpty() }
         eyesClosed = photos.filter { FaceRules.hasEyesClosed(it.faces) && "eyes:${it.uri}" !in dismissed }
         blurryFace = photos.filter { FaceRules.hasBlurryFace(it.faces) && "faceblur:${it.uri}" !in dismissed }
         sadFace = photos.filter { FaceRules.hasSadMouth(it.faces) && "sad:${it.uri}" !in dismissed }
         (photoGroups + videoGroups).forEach { g -> g.items.forEach { marked.putIfAbsent(it.uri, it !== g.keeper) } }
+    }
+
+    /** Photos that look like each custom category's samples, best match first. Needs embeddings, which a scan adds. */
+    private fun computeMatches() {
+        val items = lastItems
+        categoryMatches = categories.associate { c ->
+            val model = CategoryModel(c.centroid, c.threshold, c.negatives)
+            c.id to items.filter { i -> !i.isVideo && i.embedding != null && "cat_${c.id}:${i.uri}" !in dismissed && model.matches(i.embedding) }
+                .sortedByDescending { model.score(it.embedding!!) }
+        }
+    }
+
+    fun addToBasket(i: MediaItem) { if (basket.none { it.first == i.uri }) basket += i.uri to i.name }
+    fun addPicked(uris: List<Uri>) { uris.forEach { u -> if (basket.none { it.first == u.toString() }) basket += u.toString() to (u.lastPathSegment ?: "photo") } }
+    fun removeFromBasket(uri: String) { basket.removeAll { it.first == uri } }
+
+    /** Learns a category from the basket: embeds each sample, keeps a small copy in Documents, then searches all saved photos. */
+    fun createCategory(label: String, description: String) = viewModelScope.launch {
+        val picked = basket.toList()
+        if (label.isBlank() || picked.isEmpty() || creating) return@launch
+        creating = true
+        val ok = withContext(Dispatchers.IO) {
+            sampleScanner.openTagger(faces = false, embeddings = true)
+            try {
+                val id = categoryStore.newId(label)
+                val embeddings = ArrayList<FloatArray>()
+                picked.forEachIndexed { n, (uri, _) ->
+                    sampleScanner.sampleFor(uri)?.let { (emb, jpeg) -> embeddings += emb; categoryStore.saveSample(id, n, jpeg) }
+                }
+                if (embeddings.isEmpty()) { categoryStore.delete(id); return@withContext false }
+                val model = CategoryModel.build(embeddings)
+                val known = lastItems.filter { i -> picked.any { it.first == i.uri } }
+                categoryStore.save(Category(id, label.trim(), description.trim(), now(), model.centroid, model.threshold, emptyList(), embeddings.size, CommonTraits.of(known)))
+                true
+            } finally { sampleScanner.closeTagger() }
+        }
+        creating = false
+        if (ok) { basket.clear(); categories = categoryStore.list(); computeMatches(); scan() }
+    }
+
+    fun setSensitivity(c: Category, threshold: Float) {
+        categoryStore.setThreshold(c.id, threshold)
+        categories = categoryStore.list(); computeMatches()
+    }
+
+    fun deleteCategory(c: Category) { categoryStore.delete(c.id); categories = categoryStore.list(); computeMatches() }
+
+    /** "Not this category": the photo becomes a negative example, so similar photos stop matching. Logged as feedback. */
+    fun notAMatch(c: Category, i: MediaItem) = viewModelScope.launch {
+        dismissed += "cat_${c.id}:${i.uri}"
+        withContext(Dispatchers.IO) {
+            i.embedding?.let { categoryStore.addNegative(c.id, Embeddings.dequantize(it)) }
+            training.logDecision(Decision(now(), "cat_${c.id}", "cat_${c.id}-${i.id}", "rejected", 1, 0, 1, 0))
+        }
+        categories = categoryStore.list(); computeMatches(); stats = training.stats()
     }
 
     fun toggle(i: MediaItem) { marked[i.uri] = marked[i.uri] != true }
@@ -220,10 +286,11 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
 
 @Composable
 fun CleanupScreen(vm: CleanupViewModel) {
-    var tab by remember { mutableIntStateOf(0) }
+    var tabKey by remember { mutableStateOf("sim") }
     var confirm by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val loader = remember { ImageLoader.Builder(ctx).components { add(VideoFrameDecoder.Factory()) }.build() }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(30)) { vm.addPicked(it) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { vm.deleteFinished(it.resultCode == android.app.Activity.RESULT_OK) }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -236,36 +303,57 @@ fun CleanupScreen(vm: CleanupViewModel) {
             LinearProgressIndicator(progress = { vm.progress }, modifier = Modifier.fillMaxWidth())
             Text("Results below update while the scan runs.", style = MaterialTheme.typography.bodySmall)
         }
-        ScrollableTabRow(tab, edgePadding = 0.dp) {
-            Tab(tab == 0, { tab = 0 }, text = { Text("Similar (${vm.photoGroups.size})") })
-            Tab(tab == 1, { tab = 1 }, text = { Text("Blurry (${vm.blurry.size})") })
-            Tab(tab == 2, { tab = 2 }, text = { Text("Videos (${vm.videoGroups.size})") })
-            Tab(tab == 3, { tab = 3 }, text = { Text("Eyes closed (${vm.eyesClosed.size})") })
-            Tab(tab == 4, { tab = 4 }, text = { Text("Blurry face (${vm.blurryFace.size})") })
-            Tab(tab == 5, { tab = 5 }, text = { Text("Sad face (${vm.sadFace.size})") })
-            Tab(tab == 6, { tab = 6 }, text = { Text("Training") })
+        val tabs = listOf("sim", "blur", "vid", "eyes", "fblur", "sad") + vm.categories.map { "cat_${it.id}" } + listOf("cats", "train")
+        val current = if (tabKey in tabs) tabKey else "sim"
+        fun title(k: String) = when (k) {
+            "sim" -> "Similar (${vm.photoGroups.size})"
+            "blur" -> "Blurry (${vm.blurry.size})"
+            "vid" -> "Videos (${vm.videoGroups.size})"
+            "eyes" -> "Eyes closed (${vm.eyesClosed.size})"
+            "fblur" -> "Blurry face (${vm.blurryFace.size})"
+            "sad" -> "Sad face (${vm.sadFace.size})"
+            "cats" -> "Categories"
+            "train" -> "Training"
+            else -> vm.categories.firstOrNull { "cat_${it.id}" == k }?.let { "${it.label} (${vm.categoryMatches[it.id]?.size ?: 0})" } ?: k
         }
-        if (tab == 6) TrainingPanel(vm) else LazyColumn(Modifier.weight(1f)) {
-            when (tab) {
-                0 -> items(vm.photoGroups) { GroupCard(it, "photo", vm, loader) }
-                2 -> items(vm.videoGroups) { GroupCard(it, "video", vm, loader) }
-                3 -> items(vm.eyesClosed) { FaceRow(it, "eyes", "Eyes are fine, keep", vm, loader) }
-                4 -> items(vm.blurryFace) { FaceRow(it, "faceblur", "Face is fine, keep", vm, loader) }
-                5 -> items(vm.sadFace) { FaceRow(it, "sad", "Not sad, keep", vm, loader) }
-                else -> items(vm.blurry) { i ->
-                    Row(Modifier.padding(vertical = 4.dp)) {
-                        Checkbox(vm.marked[i.uri] == true, { vm.toggle(i) })
-                        Thumb(i, loader)
-                        Column(Modifier.padding(start = 8.dp)) {
-                            Text(i.name); Text("${formatSize(i.sizeBytes)} · sharpness ${i.blur.toInt()}", style = MaterialTheme.typography.bodySmall)
-                            TextButton({ vm.keepBlurry(i) }) { Text("Not blurry, keep") }
+        if (vm.basket.isNotEmpty()) Text("${vm.basket.size} sample photos picked. Name them in the Categories tab.", style = MaterialTheme.typography.bodySmall)
+        ScrollableTabRow(tabs.indexOf(current), edgePadding = 0.dp) {
+            tabs.forEach { k -> Tab(current == k, { tabKey = k }, text = { Text(title(k)) }) }
+        }
+        when (current) {
+            "train" -> TrainingPanel(vm)
+            "cats" -> CategoriesPanel(vm, onPick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+            else -> LazyColumn(Modifier.weight(1f)) {
+                when (current) {
+                    "sim" -> items(vm.photoGroups) { GroupCard(it, "photo", vm, loader) }
+                    "vid" -> items(vm.videoGroups) { GroupCard(it, "video", vm, loader) }
+                    "eyes" -> items(vm.eyesClosed) { FaceRow(it, "Eyes are fine, keep", { i -> vm.keepFace("eyes", i) }, vm, loader) }
+                    "fblur" -> items(vm.blurryFace) { FaceRow(it, "Face is fine, keep", { i -> vm.keepFace("faceblur", i) }, vm, loader) }
+                    "sad" -> items(vm.sadFace) { FaceRow(it, "Not sad, keep", { i -> vm.keepFace("sad", i) }, vm, loader) }
+                    "blur" -> items(vm.blurry) { i ->
+                        Row(Modifier.padding(vertical = 4.dp)) {
+                            Checkbox(vm.marked[i.uri] == true, { vm.toggle(i) })
+                            Thumb(i, loader)
+                            Column(Modifier.padding(start = 8.dp)) {
+                                Text(i.name); Text("${formatSize(i.sizeBytes)} · sharpness ${i.blur.toInt()}", style = MaterialTheme.typography.bodySmall)
+                                Row {
+                                    TextButton({ vm.keepBlurry(i) }) { Text("Not blurry, keep") }
+                                    TextButton({ vm.addToBasket(i) }) { Text("+ Sample") }
+                                }
+                            }
+                        }
+                    }
+                    else -> vm.categories.firstOrNull { "cat_${it.id}" == current }?.let { c ->
+                        item { Text(c.description.ifBlank { "Photos that look like your ${c.label} samples." }, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp)) }
+                        items(vm.categoryMatches[c.id] ?: emptyList()) { i ->
+                            FaceRow(i, "Not ${c.label}, keep", { vm.notAMatch(c, i) }, vm, loader)
                         }
                     }
                 }
             }
         }
         val n = vm.markedItems().size
-        if (n > 0 && tab != 6) {
+        if (n > 0 && tabKey != "train" && tabKey != "cats") {
             Button(onClick = { confirm = true }, enabled = vm.safe(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 Text("Review & delete $n items (${formatSize(vm.reclaimable())})")
             }
@@ -287,14 +375,57 @@ fun CleanupScreen(vm: CleanupViewModel) {
 }
 
 @Composable
-private fun FaceRow(i: MediaItem, kind: String, keepLabel: String, vm: CleanupViewModel, loader: ImageLoader) {
+private fun FaceRow(i: MediaItem, keepLabel: String, onKeep: (MediaItem) -> Unit, vm: CleanupViewModel, loader: ImageLoader) {
     Row(Modifier.padding(vertical = 4.dp)) {
         Checkbox(vm.marked[i.uri] == true, { vm.toggle(i) })
         Thumb(i, loader)
         Column(Modifier.padding(start = 8.dp)) {
             Text(i.name)
-            Text(formatSize(i.sizeBytes) + " · " + FaceRules.describe(i.faces), style = MaterialTheme.typography.bodySmall)
-            TextButton({ vm.keepFace(kind, i) }) { Text(keepLabel) }
+            Text(formatSize(i.sizeBytes) + (FaceRules.describe(i.faces).takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+            Row {
+                TextButton({ onKeep(i) }) { Text(keepLabel) }
+                TextButton({ vm.addToBasket(i) }) { Text("+ Sample") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoriesPanel(vm: CleanupViewModel, onPick: () -> Unit) {
+    var label by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    LazyColumn(Modifier.padding(top = 12.dp)) {
+        item {
+            Text("Teach the app your own category", style = MaterialTheme.typography.titleSmall)
+            Text("Pick sample photos (use + Sample on any photo, or pick from your gallery), give them a name and describe what they have in common. The app learns what the samples look like, adds a tab for the name and searches all your saved photos for matches. Review and delete from that tab.", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.padding(vertical = 8.dp)) {
+                Button(onPick) { Text("Pick photos…") }
+                Text("  ${vm.basket.size} samples", modifier = Modifier.padding(top = 10.dp))
+            }
+            vm.basket.forEach { (uri, name) ->
+                Row { Text(name, modifier = Modifier.weight(1f).padding(top = 12.dp), maxLines = 1); TextButton({ vm.removeFromBasket(uri) }) { Text("Remove") } }
+            }
+            OutlinedTextField(label, { label = it }, label = { Text("Name, e.g. Sad face") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(description, { description = it }, label = { Text("What do they have in common? (saved with the samples)") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            Button(
+                onClick = { vm.createCategory(label, description); label = ""; description = "" },
+                enabled = label.isNotBlank() && vm.basket.isNotEmpty() && !vm.creating,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            ) { Text(if (vm.creating) "Learning…" else "Learn this category and search all photos") }
+            Text("Samples and the learned category are saved in ${vm.training.dir.path}/categories and are reloaded after reinstalling.", style = MaterialTheme.typography.bodySmall)
+        }
+        items(vm.categories) { c ->
+            Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("${c.label} · ${c.sampleCount} samples · ${vm.categoryMatches[c.id]?.size ?: 0} matches", style = MaterialTheme.typography.titleSmall)
+                    if (c.description.isNotBlank()) Text(c.description, style = MaterialTheme.typography.bodySmall)
+                    if (c.traits.isNotEmpty()) Text("In common: " + c.traits.joinToString(", "), style = MaterialTheme.typography.bodySmall)
+                    Text("Looser matches ← → stricter matches", style = MaterialTheme.typography.labelSmall)
+                    var cut by remember(c.id, c.threshold) { mutableFloatStateOf(c.threshold) }
+                    Slider(cut, { cut = it }, valueRange = CategoryModel.MIN_THRESHOLD..CategoryModel.MAX_THRESHOLD, onValueChangeFinished = { vm.setSensitivity(c, cut) })
+                    TextButton({ vm.deleteCategory(c) }) { Text("Delete this category (photos are not touched)") }
+                }
+            }
         }
     }
 }
@@ -332,6 +463,7 @@ private fun GroupCard(g: SimilarGroup, kind: String, vm: CleanupViewModel, loade
                         Text("${i.width}×${i.height} · ${formatSize(i.sizeBytes)}", style = MaterialTheme.typography.bodySmall)
                         SceneMatcher.describe(i.objects).takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                         FaceRules.describe(i.faces).takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        TextButton({ vm.addToBasket(i) }) { Text("+ Sample") }
                     }
                 }
             }

@@ -6,6 +6,8 @@ import android.os.Environment
 import androidx.work.*
 import com.varun.filemanager.media.NightWindow
 import com.varun.filemanager.media.ScanEngine
+import com.varun.filemanager.training.CategoryStore
+import com.varun.filemanager.training.TrainingDir
 import com.varun.filemanager.ui.AppSettings
 import java.util.concurrent.TimeUnit
 
@@ -15,7 +17,8 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val hasAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
         if (!hasAccess) return Result.success() // nothing to do until the user grants access
         val settings = AppSettings(applicationContext as android.app.Application)
-        ScanEngine(applicationContext).run("background", settings.thresholds, detectFaces = settings.faceDetection, isCancelled = { isStopped })
+        ScanEngine(applicationContext).run("background", settings.thresholds, detectFaces = settings.faceDetection,
+            embeddings = CategoryStore(TrainingDir.resolve(applicationContext)).hasAny(), isCancelled = { isStopped })
         // If the system stopped us part-way, the saved rows let the retry carry on.
         return if (isStopped) Result.retry() else Result.success()
     }

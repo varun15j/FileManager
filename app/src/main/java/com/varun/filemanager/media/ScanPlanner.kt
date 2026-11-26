@@ -24,7 +24,7 @@ object ScanPlanner {
 
     private fun key(i: MediaItem) = "${i.path}|${i.sizeBytes}|${i.modifiedMs}"
 
-    fun plan(current: List<MediaItem>, saved: Map<String, MediaItem>, requireFaces: Boolean = true): ScanPlan {
+    fun plan(current: List<MediaItem>, saved: Map<String, MediaItem>, requireFaces: Boolean = true, requireEmbedding: Boolean = false): ScanPlan {
         val needed = if (requireFaces) ANALYSIS_VERSION else 0
         val reuse = ArrayList<MediaItem>()
         val todo = ArrayList<MediaItem>()
@@ -36,11 +36,11 @@ object ScanPlanner {
             val s = saved[raw.uri] ?: raw.path?.takeIf { it.isNotBlank() }?.let { byPath[key(raw)] }
             // A saved result is valid if the file is unchanged and it was analyzed (has hashes).
             if (s != null && s.hashes.isNotEmpty() && s.sizeBytes == raw.sizeBytes && s.modifiedMs == raw.modifiedMs) {
-                val kept = raw.copy(hashes = s.hashes, blur = s.blur, objects = s.objects, faces = s.faces, analysisVersion = s.analysisVersion, durationMs = if (raw.isVideo) s.durationMs else raw.durationMs)
+                val kept = raw.copy(hashes = s.hashes, blur = s.blur, objects = s.objects, faces = s.faces, analysisVersion = s.analysisVersion, embedding = s.embedding, durationMs = if (raw.isVideo) s.durationMs else raw.durationMs)
                 reuse += kept
                 if (s.uri != raw.uri) rekeyed += kept
                 // Old results are shown straight away; face data is added afterwards.
-                if (!raw.isVideo && s.analysisVersion < needed) upgrade += kept
+                if (!raw.isVideo && (s.analysisVersion < needed || (requireEmbedding && s.embedding == null))) upgrade += kept
             } else todo += raw
         }
         val live = current.mapTo(HashSet()) { it.uri }
