@@ -19,8 +19,8 @@ data class ScanPlan(
 )
 
 object ScanPlanner {
-    /** 2 = photos carry face data. Photos saved with an older version are analyzed again once. */
-    const val ANALYSIS_VERSION = 2
+    /** 3 = faces found on a ~1024 px copy (2 used 256 px and found almost none). Older photos are analyzed again once, after new files. */
+    const val ANALYSIS_VERSION = 3
 
     private fun key(i: MediaItem) = "${i.path}|${i.sizeBytes}|${i.modifiedMs}"
 

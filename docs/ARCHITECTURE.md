@@ -64,3 +64,7 @@ Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow spa
 - On first open after an uninstall, or whenever the database is empty, the copy is restored, then only new or changed files are scanned. Needs All files access.
 - The Photos tab shows the saved results as soon as the app opens (no Analyze needed). Saved photos that lack newer data (faces) stay visible; the extra analysis runs afterwards, after new files.
 - If MediaStore ids change, saved rows are matched again by path, size and modified time and saved under the new id.
+
+## Face detection on a larger image (PR 10)
+- On the phone, only 3 of 4,100 analyzed photos had a face: faces were searched in the 256 px picture used for hashing, where they are tiny. Faces are now searched in a separate decode of about 1024 px or more on the long side. Hashes, blur and objects still use the 256 px picture, so saved results stay comparable.
+- Face detector confidence lowered from 0.5 to 0.4. `ANALYSIS_VERSION` is 3, so photos checked with the old method get faces again, after new files, while their saved results stay visible.

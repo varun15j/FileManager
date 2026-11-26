@@ -78,7 +78,10 @@ class MediaScanner(private val context: Context) {
     private fun analyzePhoto(item: MediaItem): MediaItem? {
         val bmp = decodeSampled(Uri.parse(item.uri), 256) ?: return null
         val objects = tagger?.detect(bmp) ?: emptyList()
-        val faces = faceTagger?.detect(bmp) ?: emptyList()
+        // Faces are small in a 256 px picture and were almost never found, so they get a larger copy.
+        val faces = faceTagger?.takeIf { it.available }?.let { ft ->
+            decodeSampled(Uri.parse(item.uri), FACE_DECODE_PX)?.let { big -> ft.detect(big).also { big.recycle() } }
+        } ?: emptyList()
         val gray = bmp.toGray(); bmp.recycle()
         return item.copy(hashes = longArrayOf(ImageMetrics.dHash(gray)), blur = ImageMetrics.blurScore(gray), objects = objects,
             faces = faces, analysisVersion = if (faceTagger?.available == true) ScanPlanner.ANALYSIS_VERSION else 1)
@@ -108,5 +111,9 @@ class MediaScanner(private val context: Context) {
         return resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
     }
 
-    companion object { val FRAME_POINTS = listOf(10, 30, 50, 70, 90) }
+    companion object {
+        val FRAME_POINTS = listOf(10, 30, 50, 70, 90)
+        /** Face detection decodes the photo at 1024 to 2047 px on its long side (a power-of-two sample size). */
+        const val FACE_DECODE_PX = 1024
+    }
 }
