@@ -65,6 +65,8 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     /** Sample photos picked for the next category. */
     val basket = mutableStateListOf<Pair<String, String>>()
     var creating by mutableStateOf(false); private set
+    /** Folders in Documents/FileManagerTraining/dataset, each a category the user can learn from. */
+    var datasetFolders by mutableStateOf<List<DatasetFolder>>(emptyList()); private set
     private var lastItems: List<MediaItem> = emptyList()
     private fun faceLists() = listOf("eyes" to eyesClosed, "faceblur" to blurryFace, "sad" to sadFace) +
         categories.map { "cat_${it.id}" to (categoryMatches[it.id] ?: emptyList()) }
@@ -78,6 +80,10 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             reports = engine.reports()
             categories = categoryStore.list()
+            refreshDataset()
+            // Photos added to a folder that was learned before are picked up without any button.
+            val changed = categories.mapNotNull { c -> datasetFolders.firstOrNull { DatasetFolders.source(it.name) == c.source && it.signature != c.signature } }
+            if (changed.isNotEmpty()) { changed.forEach { learnFolderNow(it) }; categories = categoryStore.list() }
             // Show what earlier scans (and a restored backup) already know, before anything is scanned again.
             val saved = runCatching { engine.cached() }.getOrDefault(emptyList())
             if (saved.isNotEmpty() && !scanning) { analyzedCount = saved.size; publish(saved); scanned = true }
@@ -179,6 +185,34 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         }
         creating = false
         if (ok) { basket.clear(); categories = categoryStore.list(); computeMatches(); scan() }
+    }
+
+    fun refreshDataset() { datasetFolders = DatasetFolders.scan(File(training.dir, "dataset")) }
+
+    /** Learns (or updates) the category named after a dataset folder, then searches all photos. */
+    fun learnFolder(f: DatasetFolder) = viewModelScope.launch {
+        if (creating) return@launch
+        creating = true
+        val ok = withContext(Dispatchers.IO) { learnFolderNow(f) }
+        creating = false
+        if (ok) { categories = categoryStore.list(); computeMatches(); scan() }
+    }
+
+    private fun learnFolderNow(f: DatasetFolder): Boolean {
+        sampleScanner.openTagger(faces = false, embeddings = true)
+        try {
+            val embeddings = f.files.mapNotNull { sampleScanner.sampleFor(Uri.fromFile(it).toString())?.first }
+            if (embeddings.isEmpty()) return false
+            val id = DatasetFolders.categoryId(f.name)
+            val old = categoryStore.list().firstOrNull { it.id == id }
+            val model = CategoryModel.build(embeddings)
+            categoryStore.save(Category(
+                id, f.label, f.description.ifBlank { "Learned from the folder dataset/${f.name}." }, old?.createdMs ?: now(),
+                model.centroid, model.threshold, old?.negatives ?: emptyList(), embeddings.size, emptyList(),
+                source = DatasetFolders.source(f.name), signature = f.signature,
+            ))
+            return true
+        } finally { sampleScanner.closeTagger() }
     }
 
     fun setSensitivity(c: Category, threshold: Float) {
@@ -394,6 +428,7 @@ private fun FaceRow(i: MediaItem, keepLabel: String, onKeep: (MediaItem) -> Unit
 private fun CategoriesPanel(vm: CleanupViewModel, onPick: () -> Unit) {
     var label by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { vm.refreshDataset() }
     LazyColumn(Modifier.padding(top = 12.dp)) {
         item {
             Text("Teach the app your own category", style = MaterialTheme.typography.titleSmall)
@@ -412,6 +447,18 @@ private fun CategoriesPanel(vm: CleanupViewModel, onPick: () -> Unit) {
                 enabled = label.isNotBlank() && vm.basket.isNotEmpty() && !vm.creating,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
             ) { Text(if (vm.creating) "Learning…" else "Learn this category and search all photos") }
+            Text("Dataset folders", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+            Text("Each folder in ${vm.training.dir.path}/dataset is a category named after the folder. Add photos to a folder and the category updates itself.", style = MaterialTheme.typography.bodySmall)
+            if (vm.datasetFolders.isEmpty()) Text("No dataset folders with photos yet.", style = MaterialTheme.typography.bodySmall)
+            vm.datasetFolders.forEach { f ->
+                val learned = vm.categories.firstOrNull { it.source == DatasetFolders.source(f.name) }
+                Row {
+                    Text("${f.label} · ${f.files.size} photos", modifier = Modifier.weight(1f).padding(top = 12.dp))
+                    TextButton({ vm.learnFolder(f) }, enabled = !vm.creating && learned?.signature != f.signature) {
+                        Text(if (learned == null) "Learn" else if (learned.signature == f.signature) "Learned" else "Update")
+                    }
+                }
+            }
             Text("Samples and the learned category are saved in ${vm.training.dir.path}/categories and are reloaded after reinstalling.", style = MaterialTheme.typography.bodySmall)
         }
         items(vm.categories) { c ->
