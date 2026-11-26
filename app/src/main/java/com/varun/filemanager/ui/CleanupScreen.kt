@@ -62,7 +62,14 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     /** URIs marked for deletion. Set once per item, so the user's own changes survive live updates. */
     val marked = mutableStateMapOf<String, Boolean>()
 
-    init { viewModelScope.launch(Dispatchers.IO) { reports = engine.reports() } }
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            reports = engine.reports()
+            // Show what earlier scans (and a restored backup) already know, before anything is scanned again.
+            val saved = runCatching { engine.cached() }.getOrDefault(emptyList())
+            if (saved.isNotEmpty() && !scanning) { analyzedCount = saved.size; publish(saved); scanned = true }
+        }
+    }
 
     private val dismissed = mutableSetOf<String>()
     private var pending: List<Pending> = emptyList()
@@ -77,7 +84,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         scanning = true; cancelled = false; marked.clear(); dismissed.clear(); analyzedCount = 0
         photoGroups = emptyList(); videoGroups = emptyList(); blurry = emptyList()
         val started = System.currentTimeMillis()
-        val seen = ArrayList<MediaItem>()
+        val seen = LinkedHashMap<String, MediaItem>()
         var lastPublish = 0L
         val all = withContext(Dispatchers.IO) {
             engine.run(
@@ -85,15 +92,15 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
                 thresholds = settings.thresholds,
                 detectFaces = settings.faceDetection,
                 onCached = { cached ->
-                    synchronized(seen) { seen += cached }
+                    synchronized(seen) { cached.forEach { seen[it.uri] = it } }
                     analyzedCount = seen.size
-                    publish(synchronized(seen) { seen.toList() })
+                    publish(synchronized(seen) { seen.values.toList() })
                 },
                 onItem = { item ->
-                    synchronized(seen) { seen += item }
+                    synchronized(seen) { seen[item.uri] = item }
                     analyzedCount = seen.size
                     val now = System.currentTimeMillis()
-                    if (now - lastPublish > 1500) { lastPublish = now; publish(synchronized(seen) { seen.toList() }) }
+                    if (now - lastPublish > 1500) { lastPublish = now; publish(synchronized(seen) { seen.values.toList() }) }
                 },
                 onProgress = { d, t -> progress = if (t == 0) 1f else d / t.toFloat() },
                 isCancelled = { cancelled },

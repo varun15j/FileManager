@@ -12,26 +12,42 @@ data class ScanPlan(
     val analyze: List<MediaItem>,
     /** URIs saved earlier that no longer exist in MediaStore. */
     val removed: Set<String>,
+    /** Saved rows whose file is the same but whose uri changed (for example after a MediaStore rebuild). Save these again under the new uri. */
+    val rekeyed: List<MediaItem> = emptyList(),
+    /** Saved photos that are valid but lack newer data (faces). They are part of [reuse], so they show at once; decode them after the new files. */
+    val upgrade: List<MediaItem> = emptyList(),
 )
 
 object ScanPlanner {
     /** 2 = photos carry face data. Photos saved with an older version are analyzed again once. */
     const val ANALYSIS_VERSION = 2
 
+    private fun key(i: MediaItem) = "${i.path}|${i.sizeBytes}|${i.modifiedMs}"
+
     fun plan(current: List<MediaItem>, saved: Map<String, MediaItem>, requireFaces: Boolean = true): ScanPlan {
         val needed = if (requireFaces) ANALYSIS_VERSION else 0
         val reuse = ArrayList<MediaItem>()
         val todo = ArrayList<MediaItem>()
+        val upgrade = ArrayList<MediaItem>()
+        val rekeyed = ArrayList<MediaItem>()
+        // Fallback match by path + size + modified time, so results still apply if MediaStore ids changed.
+        val byPath by lazy { saved.values.filter { !it.path.isNullOrBlank() }.associateBy { key(it) } }
         for (raw in current) {
-            val s = saved[raw.uri]
+            val s = saved[raw.uri] ?: raw.path?.takeIf { it.isNotBlank() }?.let { byPath[key(raw)] }
             // A saved result is valid if the file is unchanged and it was analyzed (has hashes).
-            if (s != null && s.hashes.isNotEmpty() && s.sizeBytes == raw.sizeBytes && s.modifiedMs == raw.modifiedMs &&
-                (raw.isVideo || s.analysisVersion >= needed)) {
-                reuse += raw.copy(hashes = s.hashes, blur = s.blur, objects = s.objects, faces = s.faces, analysisVersion = s.analysisVersion, durationMs = if (raw.isVideo) s.durationMs else raw.durationMs)
+            if (s != null && s.hashes.isNotEmpty() && s.sizeBytes == raw.sizeBytes && s.modifiedMs == raw.modifiedMs) {
+                val kept = raw.copy(hashes = s.hashes, blur = s.blur, objects = s.objects, faces = s.faces, analysisVersion = s.analysisVersion, durationMs = if (raw.isVideo) s.durationMs else raw.durationMs)
+                reuse += kept
+                if (s.uri != raw.uri) rekeyed += kept
+                // Old results are shown straight away; face data is added afterwards.
+                if (!raw.isVideo && s.analysisVersion < needed) upgrade += kept
             } else todo += raw
         }
         val live = current.mapTo(HashSet()) { it.uri }
-        return ScanPlan(reuse, todo.sortedByDescending { it.dateTakenMs }, saved.keys.filterTo(HashSet()) { it !in live })
+        return ScanPlan(
+            reuse, todo.sortedByDescending { it.dateTakenMs }, saved.keys.filterTo(HashSet()) { it !in live },
+            rekeyed, upgrade.sortedByDescending { it.dateTakenMs },
+        )
     }
 }
 

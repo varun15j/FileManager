@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.Environment
+import java.io.File
 
 /** One finished or interrupted scan, kept so the user (and later training) can see what happened. */
 data class ScanReport(
@@ -20,7 +22,46 @@ data class ScanReport(
  * SQLite store of analysis results, one row per photo/video, so a scan only has to decode new or changed
  * files. Rows are written as each item is analyzed, so a scan that was stopped carries on where it left off.
  */
-class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", null, 2) {
+class AnalysisDb(private val appContext: Context, private val mirror: File? = defaultMirror()) : SQLiteOpenHelper(appContext, DbMirror.DB_NAME, null, 2) {
+    private val localFile: File get() = appContext.getDatabasePath(DbMirror.DB_NAME)
+
+    init { if (!localFile.exists()) restoreFromMirror() }
+
+    /**
+     * Copies the saved database back from Documents (after an uninstall or a cleared app). Returns true if a
+     * valid copy was restored. Needs "All files access"; without it the mirror simply is not there to read.
+     */
+    @Synchronized fun restoreFromMirror(): Boolean {
+        val m = mirror?.takeIf { it.isFile && it.length() > 0 } ?: return false
+        close()
+        return try {
+            DbMirror.deleteDb(localFile)
+            localFile.parentFile?.mkdirs()
+            DbMirror.copyAtomic(m, localFile)
+            itemCount() // opens the copy: fails if it is damaged or from a newer app
+            true
+        } catch (e: Exception) {
+            close(); DbMirror.deleteDb(localFile); false
+        }
+    }
+
+    /** If this database is empty but a backup holds results, bring the backup back. */
+    @Synchronized fun restoreIfEmpty(): Boolean = mirror != null && itemCount() == 0 && restoreFromMirror()
+
+    @Synchronized fun itemCount(): Int =
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM items", null).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+
+    /** Writes a consistent copy to Documents. Never replaces a backup with an empty database. */
+    @Synchronized fun backup(): Boolean {
+        val m = mirror ?: return false
+        return try {
+            if (itemCount() == 0) return false
+            writableDatabase.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+            DbMirror.copyAtomic(localFile, m)
+            true
+        } catch (e: Exception) { false }
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE items(
             uri TEXT PRIMARY KEY, id INTEGER, video INTEGER, path TEXT, name TEXT, size INTEGER,
@@ -58,7 +99,7 @@ class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", nu
         return out
     }
 
-    fun save(items: List<MediaItem>) {
+    @Synchronized fun save(items: List<MediaItem>) {
         if (items.isEmpty()) return
         val db = writableDatabase
         db.beginTransaction()
@@ -76,14 +117,14 @@ class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", nu
         } finally { db.endTransaction() }
     }
 
-    fun delete(uris: Collection<String>) {
+    @Synchronized fun delete(uris: Collection<String>) {
         if (uris.isEmpty()) return
         val db = writableDatabase
         db.beginTransaction()
         try { uris.forEach { db.delete("items", "uri=?", arrayOf(it)) }; db.setTransactionSuccessful() } finally { db.endTransaction() }
     }
 
-    fun addReport(r: ScanReport) {
+    @Synchronized fun addReport(r: ScanReport) {
         writableDatabase.insert("reports", null, ContentValues().apply {
             put("started", r.startedAt); put("finished", r.finishedAt); put("source", r.source); put("status", r.status)
             put("total", r.total); put("reused", r.reused); put("analyzed", r.analyzed); put("removed", r.removed)
@@ -99,5 +140,11 @@ class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", nu
             while (c.moveToNext()) out += ScanReport(c.getLong(0), c.getLong(1), c.getString(2), c.getString(3), c.getInt(4), c.getInt(5), c.getInt(6), c.getInt(7), c.getInt(8), c.getInt(9), c.getInt(10))
         }
         return out
+    }
+
+    companion object {
+        /** Documents/FileManagerTraining/db/analysis.db, next to the training data. */
+        fun defaultMirror(): File =
+            File(File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "FileManagerTraining"), "db/${DbMirror.DB_NAME}")
     }
 }
