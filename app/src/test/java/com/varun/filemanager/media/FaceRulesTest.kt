@@ -32,4 +32,14 @@ class FaceRulesTest {
         val open = p(2, 2000, listOf(face(smile = 0.8f)))
         assertEquals(2L, SimilarGrouper().groupPhotos(listOf(blinking, open)).single().keeper.id)
     }
+
+    @Test fun photoLevelChecksIgnoreTinyFaces() {
+        val closed = FaceInfo(0.5f, 0.5f, 0.2f, 0.3f, 0.9f, 0f, 0f, 100.0)
+        val tinyClosed = closed.copy(w = 0.02f)
+        assertTrue(FaceRules.hasEyesClosed(listOf(closed)))
+        assertFalse(FaceRules.hasEyesClosed(listOf(tinyClosed)))
+        assertTrue(FaceRules.hasBlurryFace(listOf(closed.copy(blink = 0f, sharpness = 5.0))))
+        assertTrue(FaceRules.hasSadMouth(listOf(closed.copy(blink = 0f, frown = 0.6f))))
+        assertFalse(FaceRules.hasSadMouth(listOf(closed.copy(blink = 0f, frown = 0.6f, smile = 0.5f))))
+    }
 }

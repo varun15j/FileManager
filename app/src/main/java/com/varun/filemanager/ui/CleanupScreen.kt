@@ -56,6 +56,11 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     var photoGroups by mutableStateOf<List<SimilarGroup>>(emptyList()); private set
     var videoGroups by mutableStateOf<List<SimilarGroup>>(emptyList()); private set
     var blurry by mutableStateOf<List<MediaItem>>(emptyList()); private set
+    /** Single photos with a face problem, for quick review: eyes closed, blurry face, sad mouth. */
+    var eyesClosed by mutableStateOf<List<MediaItem>>(emptyList()); private set
+    var blurryFace by mutableStateOf<List<MediaItem>>(emptyList()); private set
+    var sadFace by mutableStateOf<List<MediaItem>>(emptyList()); private set
+    private fun faceLists() = listOf("eyes" to eyesClosed, "faceblur" to blurryFace, "sad" to sadFace)
     var stats by mutableStateOf(training.stats()); private set
     var reports by mutableStateOf<List<ScanReport>>(emptyList()); private set
     var samplesEnabled by mutableStateOf(training.samplesEnabled); private set
@@ -82,7 +87,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
     fun scan() = viewModelScope.launch {
         if (scanning) return@launch
         scanning = true; cancelled = false; marked.clear(); dismissed.clear(); analyzedCount = 0
-        photoGroups = emptyList(); videoGroups = emptyList(); blurry = emptyList()
+        photoGroups = emptyList(); videoGroups = emptyList(); blurry = emptyList(); eyesClosed = emptyList(); blurryFace = emptyList(); sadFace = emptyList()
         val started = System.currentTimeMillis()
         val seen = LinkedHashMap<String, MediaItem>()
         var lastPublish = 0L
@@ -120,12 +125,16 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         photoGroups = grouper.groupPhotos(items).filter { it.id !in dismissed }
         videoGroups = grouper.groupVideos(items).filter { it.id !in dismissed }
         blurry = grouper.blurry(items, settings.thresholds.blurThreshold).filter { "blur:${it.uri}" !in dismissed }
+        val photos = items.filter { !it.isVideo && it.faces.isNotEmpty() }
+        eyesClosed = photos.filter { FaceRules.hasEyesClosed(it.faces) && "eyes:${it.uri}" !in dismissed }
+        blurryFace = photos.filter { FaceRules.hasBlurryFace(it.faces) && "faceblur:${it.uri}" !in dismissed }
+        sadFace = photos.filter { FaceRules.hasSadMouth(it.faces) && "sad:${it.uri}" !in dismissed }
         (photoGroups + videoGroups).forEach { g -> g.items.forEach { marked.putIfAbsent(it.uri, it !== g.keeper) } }
     }
 
     fun toggle(i: MediaItem) { marked[i.uri] = marked[i.uri] != true }
     fun markedItems(): List<MediaItem> =
-        (photoGroups.flatMap { it.items } + videoGroups.flatMap { it.items } + blurry).distinctBy { it.uri }.filter { marked[it.uri] == true }
+        (photoGroups.flatMap { it.items } + videoGroups.flatMap { it.items } + blurry + faceLists().flatMap { it.second }).distinctBy { it.uri }.filter { marked[it.uri] == true }
     /** Safety: never allow a group to lose every copy. */
     fun safe() = (photoGroups + videoGroups).all { g -> g.items.any { marked[it.uri] != true } }
     fun reclaimable() = markedItems().sumOf { it.sizeBytes }
@@ -146,16 +155,26 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
         blurry = blurry.filter { it.uri != i.uri }; stats = training.stats()
     }
 
+    /** User says this photo is fine for this face check. Logged as feedback (so the thresholds can be tuned) and hidden. */
+    fun keepFace(kind: String, i: MediaItem) = viewModelScope.launch {
+        dismissed += "$kind:${i.uri}"
+        withContext(Dispatchers.IO) { training.logDecision(Decision(now(), kind, "$kind-${i.id}", "rejected", 1, 0, 1, 0)); saveSamples("$kind-${i.id}", listOf(i)) }
+        when (kind) { "eyes" -> eyesClosed = eyesClosed.filter { it.uri != i.uri }; "faceblur" -> blurryFace = blurryFace.filter { it.uri != i.uri }; else -> sadFace = sadFace.filter { it.uri != i.uri } }
+        stats = training.stats()
+    }
+
     /** Starts deletion: logs what the analyzer found and the user's choices, saves samples, then asks Android to trash. */
     fun requestDelete(): android.content.IntentSender? {
         val toDelete = markedItems().map { it.uri }.toSet()
         pending = (photoGroups.map { "photo" to it } + videoGroups.map { "video" to it }).mapNotNull { (kind, g) ->
             val del = g.items.count { it.uri in toDelete }
             if (del == 0) null else Pending(kind, g.id, g.items.size, del, g.items.size - del, g.items.count { (it.uri in toDelete) == (it === g.keeper) })
-        } + blurry.filter { it.uri in toDelete }.map { Pending("blur", "blur-${it.id}", 1, 1, 0, 0) }
+        } + blurry.filter { it.uri in toDelete }.map { Pending("blur", "blur-${it.id}", 1, 1, 0, 0) } +
+            faceLists().flatMap { (k, l) -> l.filter { it.uri in toDelete }.map { Pending(k, "$k-${it.id}", 1, 1, 0, 0) } }
         viewModelScope.launch(Dispatchers.IO) {
             (photoGroups.map { "photo" to it } + videoGroups.map { "video" to it }).filter { (_, g) -> g.items.any { it.uri in toDelete } }.forEach { (k, g) -> logGroup(k, g) }
             blurry.filter { it.uri in toDelete }.forEach { saveSamples("blur-${it.id}", listOf(it)) }
+            faceLists().forEach { (k, l) -> l.filter { it.uri in toDelete }.forEach { saveSamples("$k-${it.id}", listOf(it)) } }
         }
         return if (Build.VERSION.SDK_INT >= 30)
             MediaStore.createTrashRequest(getApplication<Application>().contentResolver, markedItems().map { Uri.parse(it.uri) }, true).intentSender
@@ -221,12 +240,18 @@ fun CleanupScreen(vm: CleanupViewModel) {
             Tab(tab == 0, { tab = 0 }, text = { Text("Similar (${vm.photoGroups.size})") })
             Tab(tab == 1, { tab = 1 }, text = { Text("Blurry (${vm.blurry.size})") })
             Tab(tab == 2, { tab = 2 }, text = { Text("Videos (${vm.videoGroups.size})") })
-            Tab(tab == 3, { tab = 3 }, text = { Text("Training") })
+            Tab(tab == 3, { tab = 3 }, text = { Text("Eyes closed (${vm.eyesClosed.size})") })
+            Tab(tab == 4, { tab = 4 }, text = { Text("Blurry face (${vm.blurryFace.size})") })
+            Tab(tab == 5, { tab = 5 }, text = { Text("Sad face (${vm.sadFace.size})") })
+            Tab(tab == 6, { tab = 6 }, text = { Text("Training") })
         }
-        if (tab == 3) TrainingPanel(vm) else LazyColumn(Modifier.weight(1f)) {
+        if (tab == 6) TrainingPanel(vm) else LazyColumn(Modifier.weight(1f)) {
             when (tab) {
                 0 -> items(vm.photoGroups) { GroupCard(it, "photo", vm, loader) }
                 2 -> items(vm.videoGroups) { GroupCard(it, "video", vm, loader) }
+                3 -> items(vm.eyesClosed) { FaceRow(it, "eyes", "Eyes are fine, keep", vm, loader) }
+                4 -> items(vm.blurryFace) { FaceRow(it, "faceblur", "Face is fine, keep", vm, loader) }
+                5 -> items(vm.sadFace) { FaceRow(it, "sad", "Not sad, keep", vm, loader) }
                 else -> items(vm.blurry) { i ->
                     Row(Modifier.padding(vertical = 4.dp)) {
                         Checkbox(vm.marked[i.uri] == true, { vm.toggle(i) })
@@ -240,7 +265,7 @@ fun CleanupScreen(vm: CleanupViewModel) {
             }
         }
         val n = vm.markedItems().size
-        if (n > 0 && tab != 3) {
+        if (n > 0 && tab != 6) {
             Button(onClick = { confirm = true }, enabled = vm.safe(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 Text("Review & delete $n items (${formatSize(vm.reclaimable())})")
             }
@@ -259,6 +284,19 @@ fun CleanupScreen(vm: CleanupViewModel) {
         },
         dismissButton = { TextButton({ confirm = false }) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun FaceRow(i: MediaItem, kind: String, keepLabel: String, vm: CleanupViewModel, loader: ImageLoader) {
+    Row(Modifier.padding(vertical = 4.dp)) {
+        Checkbox(vm.marked[i.uri] == true, { vm.toggle(i) })
+        Thumb(i, loader)
+        Column(Modifier.padding(start = 8.dp)) {
+            Text(i.name)
+            Text(formatSize(i.sizeBytes) + " · " + FaceRules.describe(i.faces), style = MaterialTheme.typography.bodySmall)
+            TextButton({ vm.keepFace(kind, i) }) { Text(keepLabel) }
+        }
+    }
 }
 
 @Composable
