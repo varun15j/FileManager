@@ -57,10 +57,12 @@ class MediaScanner(private val context: Context) {
                 val id = c.getLong(idx(MediaStore.MediaColumns._ID))
                 val taken = idx(MediaStore.MediaColumns.DATE_TAKEN).let { if (it >= 0 && !c.isNull(it)) c.getLong(it) else 0L }
                     .takeIf { it > 0 } ?: (c.getLong(idx(MediaStore.MediaColumns.DATE_ADDED)) * 1000)
+                val path = c.getString(idx(MediaStore.MediaColumns.DATA))
+                if (!MediaFilter.isCleanupCandidate(path, c.getInt(idx(MediaStore.MediaColumns.WIDTH)), c.getInt(idx(MediaStore.MediaColumns.HEIGHT)), video)) continue
                 list += MediaItem(
                     id = id,
                     uri = ContentUris.withAppendedId(base, id).toString(),
-                    path = c.getString(idx(MediaStore.MediaColumns.DATA)),
+                    path = path,
                     name = c.getString(idx(MediaStore.MediaColumns.DISPLAY_NAME)) ?: "",
                     sizeBytes = c.getLong(idx(MediaStore.MediaColumns.SIZE)),
                     dateTakenMs = taken,

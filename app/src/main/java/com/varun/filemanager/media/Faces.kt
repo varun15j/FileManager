@@ -31,6 +31,11 @@ object FaceRules {
     fun sad(f: FaceInfo) = f.frown >= SAD_FROWN && f.smile < SAD_MAX_SMILE
     fun blurry(f: FaceInfo) = f.sharpness < BLURRY_FACE
 
+    /** Photo-level checks for the review tabs: true if any face big enough to judge has the problem. */
+    fun hasEyesClosed(faces: List<FaceInfo>) = judged(faces).any { eyesClosed(it) }
+    fun hasBlurryFace(faces: List<FaceInfo>) = judged(faces).any { blurry(it) }
+    fun hasSadMouth(faces: List<FaceInfo>) = judged(faces).any { sad(it) }
+
     /** Higher is better. Closed eyes and a blurry face cost the most; a smile adds a little. No faces = 0. */
     fun score(faces: List<FaceInfo>): Int = judged(faces).sumOf { f ->
         var s = 0

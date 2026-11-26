@@ -68,3 +68,7 @@ Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow spa
 ## Face detection on a larger image (PR 10)
 - On the phone, only 3 of 4,100 analyzed photos had a face: faces were searched in the 256 px picture used for hashing, where they are tiny. Faces are now searched in a separate decode of about 1024 px or more on the long side. Hashes, blur and objects still use the 256 px picture, so saved results stay comparable.
 - Face detector confidence lowered from 0.5 to 0.4. `ANALYSIS_VERSION` is 3, so photos checked with the old method get faces again, after new files, while their saved results stay visible.
+
+## Face tabs and camera-only scan (PR 11)
+- New review tabs: Eyes closed, Blurry face, Sad face. Each lists single photos where a face big enough to judge has the problem, with checkboxes, a "keep" button that is logged as feedback, and the same trash-with-undo flow.
+- `MediaFilter` limits the scan to camera, gallery, download, screenshot and chat-app photos and videos. It skips app and system folders (Android/data, Android/obb, system apps' media), Music (album art), Ringtones and similar, hidden and thumbnail folders, `Documents` (including the app's own training data), and pictures under 320 px on a side (icons, UI resources). Files in those places never appear in any tab, so they cannot be deleted from here. Saved results for them are dropped on the next complete scan.
