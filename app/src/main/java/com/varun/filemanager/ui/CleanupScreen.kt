@@ -83,6 +83,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
             engine.run(
                 source = "manual",
                 thresholds = settings.thresholds,
+                detectFaces = settings.faceDetection,
                 onCached = { cached ->
                     synchronized(seen) { seen += cached }
                     analyzedCount = seen.size
@@ -175,6 +176,7 @@ class CleanupViewModel(app: Application) : AndroidViewModel(app) {
             "items" to g.items.map { i ->
                 mapOf("uri" to i.uri, "name" to i.name, "size" to i.sizeBytes, "w" to i.width, "h" to i.height, "takenMs" to i.dateTakenMs,
                     "durationMs" to i.durationMs, "hashes" to i.hashes, "blur" to (if (i.blur.isNaN()) null else i.blur),
+                    "faces" to i.faces.map { f -> mapOf("cx" to f.cx, "cy" to f.cy, "w" to f.w, "h" to f.h, "blink" to f.blink, "smile" to f.smile, "frown" to f.frown, "sharp" to f.sharpness) },
                     "objects" to i.objects.map { o -> mapOf("kind" to o.kind.name, "label" to o.label, "cx" to o.cx, "cy" to o.cy, "w" to o.w, "h" to o.h) },
                     "markedForDelete" to (marked[i.uri] == true))
             },
@@ -284,6 +286,7 @@ private fun GroupCard(g: SimilarGroup, kind: String, vm: CleanupViewModel, loade
                         Text(if (i === g.keeper) "${i.name} (best, kept)" else i.name)
                         Text("${i.width}×${i.height} · ${formatSize(i.sizeBytes)}", style = MaterialTheme.typography.bodySmall)
                         SceneMatcher.describe(i.objects).takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        FaceRules.describe(i.faces).takeIf { it.isNotEmpty() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }

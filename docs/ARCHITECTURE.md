@@ -53,3 +53,8 @@ Status: M1 code is written but not yet compiled locally (no Android SDK in the a
 
 ## App icon (PR 7)
 Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow sparkles for the AI part and a green check badge for "fixed", on an indigo gradient. Includes a monochrome layer for themed icons (Android 13+). Source preview in `docs/icon/`. Build number 7.
+
+## Faces: eyes, smile, sad mouth (PR 8)
+- `media/FaceTagger` runs MediaPipe Face Landmarker (`face_landmarker.task`, Apache-2.0, bundled) on the 256 px photo copy. Per face it reads eye-blink, mouth-smile and mouth-frown blendshape scores plus a sharpness score of the face crop.
+- `media/FaceRules` turns scores into labels: eyes closed, blurry face, smiling, "sad mouth" (frown with no smile; MediaPipe has no mood label, so this is not a real emotion reading) and a photo score. The best-to-keep order is now: face score, resolution, sharpness, file size, so a photo with closed eyes loses to one with open eyes even if it is larger.
+- Face data is stored in the SQLite cache (DB version 2). Saved photos without it are analyzed once more when face detection is on. Switch in Settings. Faces are logged to `groups.jsonl` for later tuning. Build number 8.

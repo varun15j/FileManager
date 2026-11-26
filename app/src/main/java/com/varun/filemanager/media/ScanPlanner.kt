@@ -15,14 +15,19 @@ data class ScanPlan(
 )
 
 object ScanPlanner {
-    fun plan(current: List<MediaItem>, saved: Map<String, MediaItem>): ScanPlan {
+    /** 2 = photos carry face data. Photos saved with an older version are analyzed again once. */
+    const val ANALYSIS_VERSION = 2
+
+    fun plan(current: List<MediaItem>, saved: Map<String, MediaItem>, requireFaces: Boolean = true): ScanPlan {
+        val needed = if (requireFaces) ANALYSIS_VERSION else 0
         val reuse = ArrayList<MediaItem>()
         val todo = ArrayList<MediaItem>()
         for (raw in current) {
             val s = saved[raw.uri]
             // A saved result is valid if the file is unchanged and it was analyzed (has hashes).
-            if (s != null && s.hashes.isNotEmpty() && s.sizeBytes == raw.sizeBytes && s.modifiedMs == raw.modifiedMs) {
-                reuse += raw.copy(hashes = s.hashes, blur = s.blur, objects = s.objects, durationMs = if (raw.isVideo) s.durationMs else raw.durationMs)
+            if (s != null && s.hashes.isNotEmpty() && s.sizeBytes == raw.sizeBytes && s.modifiedMs == raw.modifiedMs &&
+                (raw.isVideo || s.analysisVersion >= needed)) {
+                reuse += raw.copy(hashes = s.hashes, blur = s.blur, objects = s.objects, faces = s.faces, analysisVersion = s.analysisVersion, durationMs = if (raw.isVideo) s.durationMs else raw.durationMs)
             } else todo += raw
         }
         val live = current.mapTo(HashSet()) { it.uri }
@@ -30,8 +35,15 @@ object ScanPlanner {
     }
 }
 
-/** Flat text forms for storing hashes and detected objects in SQLite columns. */
+/** Flat text forms for storing hashes, detected objects and faces in SQLite columns. */
 object ItemCodec {
+    fun faces(f: List<FaceInfo>): String = f.joinToString(";") { "${it.cx}|${it.cy}|${it.w}|${it.h}|${it.blink}|${it.smile}|${it.frown}|${it.sharpness}" }
+    fun parseFaces(s: String?): List<FaceInfo> =
+        if (s.isNullOrBlank()) emptyList() else s.split(';').mapNotNull { part ->
+            val f = part.split('|')
+            runCatching { FaceInfo(f[0].toFloat(), f[1].toFloat(), f[2].toFloat(), f[3].toFloat(), f[4].toFloat(), f[5].toFloat(), f[6].toFloat(), f[7].toDouble()) }.getOrNull()
+        }
+
     fun hashes(h: LongArray): String = h.joinToString(",")
     fun parseHashes(s: String?): LongArray = if (s.isNullOrBlank()) LongArray(0) else s.split(',').map { it.toLong() }.toLongArray()
 

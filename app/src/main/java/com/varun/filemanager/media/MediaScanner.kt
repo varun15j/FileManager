@@ -12,6 +12,7 @@ import android.provider.MediaStore
 /** Reads photos and videos from MediaStore and computes hashes/blur from small decoded copies. */
 class MediaScanner(private val context: Context) {
     private var tagger: ObjectTagger? = null
+    private var faceTagger: FaceTagger? = null
     private val resolver: ContentResolver get() = context.contentResolver
 
     /** All photos and videos MediaStore knows about, newest first. Cheap: no decoding. */
@@ -21,8 +22,11 @@ class MediaScanner(private val context: Context) {
     fun analyze(item: MediaItem): MediaItem? =
         runCatching { if (item.isVideo) analyzeVideo(item) else analyzePhoto(item) }.getOrNull()
 
-    fun openTagger() { if (tagger == null) tagger = ObjectTagger(context) }
-    fun closeTagger() { tagger?.close(); tagger = null }
+    fun openTagger(faces: Boolean = true) {
+        if (tagger == null) tagger = ObjectTagger(context)
+        if (faces && faceTagger == null) faceTagger = FaceTagger(context)
+    }
+    fun closeTagger() { tagger?.close(); tagger = null; faceTagger?.close(); faceTagger = null }
 
     /** Small JPEG (about 256 px) for training samples. Null if the item cannot be decoded. */
     fun thumbnailJpeg(item: MediaItem): ByteArray? = runCatching {
@@ -74,8 +78,10 @@ class MediaScanner(private val context: Context) {
     private fun analyzePhoto(item: MediaItem): MediaItem? {
         val bmp = decodeSampled(Uri.parse(item.uri), 256) ?: return null
         val objects = tagger?.detect(bmp) ?: emptyList()
+        val faces = faceTagger?.detect(bmp) ?: emptyList()
         val gray = bmp.toGray(); bmp.recycle()
-        return item.copy(hashes = longArrayOf(ImageMetrics.dHash(gray)), blur = ImageMetrics.blurScore(gray), objects = objects)
+        return item.copy(hashes = longArrayOf(ImageMetrics.dHash(gray)), blur = ImageMetrics.blurScore(gray), objects = objects,
+            faces = faces, analysisVersion = if (faceTagger?.available == true) ScanPlanner.ANALYSIS_VERSION else 1)
     }
 
     private fun analyzeVideo(item: MediaItem): MediaItem? {
@@ -100,16 +106,6 @@ class MediaScanner(private val context: Context) {
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
         return resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
-    }
-
-    private fun Bitmap.toGray(): Gray {
-        val px = IntArray(width * height)
-        getPixels(px, 0, width, 0, 0, width, height)
-        for (i in px.indices) {
-            val c = px[i]
-            px[i] = (0.299 * ((c shr 16) and 0xFF) + 0.587 * ((c shr 8) and 0xFF) + 0.114 * (c and 0xFF)).toInt()
-        }
-        return Gray(width, height, px)
     }
 
     companion object { val FRAME_POINTS = listOf(10, 30, 50, 70, 90) }

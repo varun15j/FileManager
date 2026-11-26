@@ -6,8 +6,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ScanPlannerTest {
-    private fun item(id: Long, size: Long = 100, mod: Long = 5, taken: Long = id, hashes: LongArray = longArrayOf(1)) =
-        MediaItem(id, "u$id", null, "n$id", size, taken, 10, 10, false, hashes = hashes, modifiedMs = mod)
+    private fun item(id: Long, size: Long = 100, mod: Long = 5, taken: Long = id, hashes: LongArray = longArrayOf(1), av: Int = ScanPlanner.ANALYSIS_VERSION) =
+        MediaItem(id, "u$id", null, "n$id", size, taken, 10, 10, false, hashes = hashes, modifiedMs = mod, analysisVersion = av)
 
     @Test fun reusesUnchangedAnalyzesNewAndChangedDropsRemoved() {
         val saved = mapOf("u1" to item(1), "u2" to item(2), "u3" to item(3), "u4" to item(4, hashes = LongArray(0)))
@@ -23,6 +23,19 @@ class ScanPlannerTest {
         assertEquals(setOf("u2", "u4", "u5"), plan.analyze.map { it.uri }.toSet())
         assertEquals("u5", plan.analyze.first().uri) // newest first
         assertEquals(setOf("u3"), plan.removed)
+    }
+
+    @Test fun photosWithoutFaceDataAreAnalyzedAgainOnlyWhenFacesAreWanted() {
+        val saved = mapOf("u1" to item(1, av = 0))
+        val current = listOf(item(1, hashes = LongArray(0)))
+        assertEquals(listOf("u1"), ScanPlanner.plan(current, saved, requireFaces = true).analyze.map { it.uri })
+        assertEquals(listOf("u1"), ScanPlanner.plan(current, saved, requireFaces = false).reuse.map { it.uri })
+    }
+
+    @Test fun faceCodecRoundTrip() {
+        val f = listOf(FaceInfo(0.5f, 0.4f, 0.2f, 0.3f, 0.8f, 0.1f, 0.35f, 22.5))
+        assertEquals(f, ItemCodec.parseFaces(ItemCodec.faces(f)))
+        assertEquals(0, ItemCodec.parseFaces("").size)
     }
 
     @Test fun codecRoundTrip() {

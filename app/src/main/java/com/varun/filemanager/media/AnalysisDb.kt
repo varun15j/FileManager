@@ -20,12 +20,12 @@ data class ScanReport(
  * SQLite store of analysis results, one row per photo/video, so a scan only has to decode new or changed
  * files. Rows are written as each item is analyzed, so a scan that was stopped carries on where it left off.
  */
-class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", null, 1) {
+class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE items(
             uri TEXT PRIMARY KEY, id INTEGER, video INTEGER, path TEXT, name TEXT, size INTEGER,
             taken INTEGER, modified INTEGER, w INTEGER, h INTEGER, duration INTEGER,
-            hashes TEXT, blur REAL, objects TEXT, analyzed_at INTEGER)""")
+            hashes TEXT, blur REAL, objects TEXT, analyzed_at INTEGER, faces TEXT, av INTEGER DEFAULT 0)""")
         db.execSQL("CREATE INDEX items_taken ON items(taken DESC)")
         db.execSQL("""CREATE TABLE reports(
             id INTEGER PRIMARY KEY AUTOINCREMENT, started INTEGER, finished INTEGER, source TEXT, status TEXT,
@@ -33,12 +33,17 @@ class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", nu
             photo_groups INTEGER, video_groups INTEGER, blurry INTEGER)""")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
+        if (old < 2) {
+            db.execSQL("ALTER TABLE items ADD COLUMN faces TEXT")
+            db.execSQL("ALTER TABLE items ADD COLUMN av INTEGER DEFAULT 0")
+        }
+    }
 
     /** All saved results, keyed by uri, newest first. */
     fun loadAll(): Map<String, MediaItem> {
         val out = LinkedHashMap<String, MediaItem>()
-        readableDatabase.rawQuery("SELECT uri,id,video,path,name,size,taken,modified,w,h,duration,hashes,blur,objects FROM items ORDER BY taken DESC", null).use { c ->
+        readableDatabase.rawQuery("SELECT uri,id,video,path,name,size,taken,modified,w,h,duration,hashes,blur,objects,faces,av FROM items ORDER BY taken DESC", null).use { c ->
             while (c.moveToNext()) {
                 val uri = c.getString(0)
                 out[uri] = MediaItem(
@@ -46,7 +51,7 @@ class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", nu
                     dateTakenMs = c.getLong(6), width = c.getInt(8), height = c.getInt(9), isVideo = c.getInt(2) == 1,
                     durationMs = c.getLong(10), hashes = ItemCodec.parseHashes(c.getString(11)),
                     blur = if (c.isNull(12)) Double.NaN else c.getDouble(12), objects = ItemCodec.parseObjects(c.getString(13)),
-                    modifiedMs = c.getLong(7),
+                    modifiedMs = c.getLong(7), faces = ItemCodec.parseFaces(c.getString(14)), analysisVersion = c.getInt(15),
                 )
             }
         }
@@ -65,6 +70,7 @@ class AnalysisDb(context: Context) : SQLiteOpenHelper(context, "analysis.db", nu
                 put("duration", i.durationMs); put("hashes", ItemCodec.hashes(i.hashes))
                 if (i.blur.isNaN()) putNull("blur") else put("blur", i.blur)
                 put("objects", ItemCodec.objects(i.objects)); put("analyzed_at", now)
+                put("faces", ItemCodec.faces(i.faces)); put("av", i.analysisVersion)
             }, SQLiteDatabase.CONFLICT_REPLACE)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
