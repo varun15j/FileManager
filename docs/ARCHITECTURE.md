@@ -84,3 +84,8 @@ Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow spa
 - Every sub-folder of `Documents/FileManagerTraining/dataset/` that holds pictures (jpg, png, webp, heic) is a category named after the folder (`sad_mouth` becomes "Sad mouth"). The Categories tab lists the folders with a Learn / Update button; an optional `description.txt` in the folder is saved as the category description.
 - Learning a folder embeds its photos, builds the category and searches all saved photos, the same as hand-picked samples. A folder's signature (names, sizes, times) is saved with the category, so photos added later update it automatically on the next app start. Negative examples ("Not this") are kept when a folder is learned again.
 - Dataset photos are read in place and not copied; they stay on the phone and the PC and are not committed to GitHub (the repository is public).
+
+## Photos are turned upright before analysis (PR 14)
+- Found on a real phone: HEIC camera photos were decoded without their EXIF orientation, so faces, objects and hashes were analyzed sideways (face boxes matched a 90° turn of the photo). That made smile, closed-eyes and sad-mouth results unreliable. `decodeSampled` now reads the orientation tag and turns the picture upright (`Orientation` holds the mapping).
+- `ANALYSIS_VERSION` is 4, so every photo is analyzed again once, after new files, while its saved result stays visible. Embeddings from an older analysis are dropped when a photo is analyzed again, so categories are never matched on sideways copies.
+- While the re-check runs, a photo's saved hash (from the sideways copy) and a new hash (upright) can differ, so similar groups may be incomplete until it finishes.
