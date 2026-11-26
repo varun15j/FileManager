@@ -5,6 +5,8 @@ import android.content.ContentUris
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.MediaStore
@@ -90,12 +92,14 @@ class MediaScanner(private val context: Context) {
 
     private fun analyzePhoto(item: MediaItem): MediaItem? {
         val bmp = decodeSampled(Uri.parse(item.uri), 256) ?: return null
-        val embedding = embedder?.takeIf { it.available }?.embed(bmp)?.let { Embeddings.quantize(it) } ?: item.embedding
+        val fresh = embedder?.takeIf { it.available }?.embed(bmp)?.let { Embeddings.quantize(it) }
         // Already analyzed with the current analysis (only the embedding is missing): keep hashes, blur, objects and faces.
         if (item.hashes.isNotEmpty() && item.analysisVersion >= ScanPlanner.ANALYSIS_VERSION) {
             bmp.recycle()
-            return item.copy(embedding = embedding)
+            return item.copy(embedding = fresh ?: item.embedding)
         }
+        // Analyzed again: an embedding from an older analysis may come from a sideways copy, so only keep a fresh one.
+        val embedding = fresh
         val objects = tagger?.detect(bmp) ?: emptyList()
         // Faces are small in a 256 px picture and were almost never found, so they get a larger copy.
         val faces = faceTagger?.takeIf { it.available }?.let { ft ->
@@ -121,13 +125,28 @@ class MediaScanner(private val context: Context) {
         } finally { r.release() }
     }
 
+    /** Decodes a smaller copy and turns it upright using the photo's EXIF orientation (HEIC and JPEG). */
     private fun decodeSampled(uri: Uri, target: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0) return null
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
-        return resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
+        val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) } ?: return null
+        return upright(bmp, exifOrientation(uri))
+    }
+
+    private fun exifOrientation(uri: Uri): Int = runCatching {
+        resolver.openInputStream(uri)?.use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }
+    }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+
+    private fun upright(bmp: Bitmap, exif: Int): Bitmap {
+        val turn = Orientation.turnFor(exif)
+        if (turn.isIdentity) return bmp
+        val m = Matrix().apply { postRotate(turn.degrees.toFloat()); if (turn.mirror) postScale(-1f, 1f) }
+        val out = runCatching { Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true) }.getOrNull() ?: return bmp
+        if (out !== bmp) bmp.recycle()
+        return out
     }
 
     companion object {

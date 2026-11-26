@@ -19,8 +19,11 @@ data class ScanPlan(
 )
 
 object ScanPlanner {
-    /** 3 = faces found on a ~1024 px copy (2 used 256 px and found almost none). Older photos are analyzed again once, after new files. */
-    const val ANALYSIS_VERSION = 3
+    /**
+     * 4 = photos are turned upright (EXIF orientation) before analysis. 3 found faces on a ~1024 px copy; 2 used 256 px.
+     * Older photos were analyzed sideways, so they are analyzed again once, after new files, while their saved results stay visible.
+     */
+    const val ANALYSIS_VERSION = 4
 
     private fun key(i: MediaItem) = "${i.path}|${i.sizeBytes}|${i.modifiedMs}"
 
