@@ -16,6 +16,10 @@ data class Category(
     val sampleCount: Int,
     /** What most samples have in common (from the analyzer), shown to the user. */
     val traits: List<String>,
+    /** "" for hand-picked samples, "dataset:<folder>" if learned from a dataset folder. */
+    val source: String = "",
+    /** For dataset folders: signature of the photos that were learned, to notice added photos. */
+    val signature: String = "",
 )
 
 /**
@@ -45,6 +49,7 @@ class CategoryStore(dir: File) {
             put("centroid", pack(c.centroid)); put("threshold", c.threshold.toDouble())
             put("negatives", c.negatives.joinToString(";") { pack(it) })
             put("sampleCount", c.sampleCount); put("traits", c.traits.joinToString("|"))
+            put("source", c.source); put("signature", c.signature)
         }.toString())
     }
 
@@ -72,6 +77,7 @@ class CategoryStore(dir: File) {
             centroid = unpack(j.getString("centroid")), threshold = j.getDouble("threshold").toFloat(),
             negatives = j.optString("negatives").split(';').filter { it.isNotBlank() }.map { unpack(it) },
             sampleCount = j.optInt("sampleCount"), traits = j.optString("traits").split('|').filter { it.isNotBlank() },
+            source = j.optString("source"), signature = j.optString("signature"),
         )
     }
 

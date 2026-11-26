@@ -79,3 +79,8 @@ Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow spa
 - Embeddings are stored (1 KB per photo, DB v3) only once a category exists; the first scan after creating one embeds saved photos in the background, the nightly scan keeps new photos embedded. Photos already analyzed keep their hashes, blur, objects and faces.
 - Everything is in `Documents/FileManagerTraining/categories/<id>/` (`category.json` and small sample copies), so it survives reinstalling. Sample copies are not committed to GitHub without an explicit OK.
 - Descriptions are saved with the samples but do not steer matching; matching learns from the photos themselves.
+
+## Categories from dataset folders (PR 13)
+- Every sub-folder of `Documents/FileManagerTraining/dataset/` that holds pictures (jpg, png, webp, heic) is a category named after the folder (`sad_mouth` becomes "Sad mouth"). The Categories tab lists the folders with a Learn / Update button; an optional `description.txt` in the folder is saved as the category description.
+- Learning a folder embeds its photos, builds the category and searches all saved photos, the same as hand-picked samples. A folder's signature (names, sizes, times) is saved with the category, so photos added later update it automatically on the next app start. Negative examples ("Not this") are kept when a folder is learned again.
+- Dataset photos are read in place and not copied; they stay on the phone and the PC and are not committed to GitHub (the repository is public).
