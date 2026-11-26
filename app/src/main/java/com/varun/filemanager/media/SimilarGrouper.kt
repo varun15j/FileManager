@@ -20,6 +20,10 @@ data class MediaItem(
     val objects: List<DetectedObject> = emptyList(),
     /** Last-modified time from MediaStore; with the size it tells us a cached result is stale. */
     val modifiedMs: Long = 0,
+    /** Faces with expression scores (empty if face detection was off or none found). */
+    val faces: List<FaceInfo> = emptyList(),
+    /** Which analysis produced this result; older results are re-analyzed when a newer analysis adds data. */
+    val analysisVersion: Int = 0,
 ) {
     val pixels: Long get() = width.toLong() * height
 }
@@ -72,10 +76,10 @@ class SimilarGrouper(
             .map { idx -> idx.map { list[it] }.let { SimilarGroup(it, bestToKeep(it)) } }
             .sortedByDescending { it.reclaimableBytes }
 
-    /** Highest resolution, then sharpest, then largest file. Only a suggestion; the user decides. */
+    /** Best faces first (eyes open, sharp, not frowning), then highest resolution, sharpest, largest. Only a suggestion; the user decides. */
     fun bestToKeep(items: List<MediaItem>): MediaItem =
         items.maxWithOrNull(
-            compareBy<MediaItem>({ it.pixels }, { if (it.blur.isNaN()) 0.0 else it.blur }, { it.sizeBytes })
+            compareBy<MediaItem>({ FaceRules.score(it.faces) }, { it.pixels }, { if (it.blur.isNaN()) 0.0 else it.blur }, { it.sizeBytes })
         )!!
 
     fun blurry(items: List<MediaItem>, threshold: Double = 60.0): List<MediaItem> =

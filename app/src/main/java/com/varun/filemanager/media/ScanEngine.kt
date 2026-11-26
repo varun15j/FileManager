@@ -14,6 +14,8 @@ class ScanEngine(context: Context, private val db: AnalysisDb = AnalysisDb(conte
     fun run(
         source: String,
         thresholds: Thresholds = Thresholds(),
+        /** Look for faces (eyes, smile, face sharpness). Photos saved without face data are analyzed again when this is on. */
+        detectFaces: Boolean = true,
         /** Called once with every saved, still-valid result. */
         onCached: (List<MediaItem>) -> Unit = {},
         /** Called after each newly analyzed item. */
@@ -22,14 +24,14 @@ class ScanEngine(context: Context, private val db: AnalysisDb = AnalysisDb(conte
         isCancelled: () -> Boolean = { false },
     ): List<MediaItem> {
         val started = System.currentTimeMillis()
-        val plan = ScanPlanner.plan(scanner.queryAll(), db.loadAll())
+        val plan = ScanPlanner.plan(scanner.queryAll(), db.loadAll(), detectFaces)
         val all = ArrayList<MediaItem>(plan.reuse)
         onCached(plan.reuse)
         var done = 0
         val total = plan.analyze.size
         onProgress(0, total)
         val batch = ArrayList<MediaItem>()
-        scanner.openTagger()
+        scanner.openTagger(detectFaces)
         try {
             for (raw in plan.analyze) {
                 if (isCancelled()) break

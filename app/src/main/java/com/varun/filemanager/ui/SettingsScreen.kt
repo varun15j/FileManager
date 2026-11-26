@@ -21,6 +21,10 @@ class AppSettings(app: Application) {
     /** Nightly scan while charging and idle. */
     var backgroundScan by mutableStateOf(prefs.getBoolean("backgroundScan", true)); private set
 
+    /** Faces, eyes and smiles (on-device). */
+    var faceDetection by mutableStateOf(prefs.getBoolean("faceDetection", true)); private set
+    fun enableFaceDetection(on: Boolean) { faceDetection = on; prefs.edit().putBoolean("faceDetection", on).apply() }
+
     fun enableBackgroundScan(on: Boolean) { backgroundScan = on; prefs.edit().putBoolean("backgroundScan", on).apply() }
 
     private fun load() = Thresholds(
@@ -52,6 +56,13 @@ fun SettingsScreen(vm: CleanupViewModel) {
         Slide("Blur limit", "${t.blurThreshold.toInt()} (higher = more photos flagged)", t.blurThreshold.toFloat(), 5f..300f) { s.update(t.copy(blurThreshold = it.toDouble())) }
         Text("Changes apply to the next analysis.", style = MaterialTheme.typography.bodySmall)
         OutlinedButton({ s.reset() }, Modifier.padding(top = 8.dp)) { Text("Reset to defaults") }
+
+        Section("Faces")
+        Row {
+            Switch(s.faceDetection, { s.enableFaceDetection(it) })
+            Text("  Check faces: eyes closed, blurry face, smile, sad mouth")
+        }
+        Text("Runs on the phone only. Used to pick the best photo in each group. Turning it on re-checks saved photos once on the next analysis.", style = MaterialTheme.typography.bodySmall)
 
         Section("Background scan")
         Row {

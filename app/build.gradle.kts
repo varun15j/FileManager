@@ -28,7 +28,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    androidResources { noCompress += "tflite" }
+    androidResources { noCompress += listOf("tflite", "task") }
 }
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
