@@ -58,3 +58,9 @@ Adaptive icon (vector, no PNGs): a fan of photo cards for duplicates, yellow spa
 - `media/FaceTagger` runs MediaPipe Face Landmarker (`face_landmarker.task`, Apache-2.0, bundled) on the 256 px photo copy. Per face it reads eye-blink, mouth-smile and mouth-frown blendshape scores plus a sharpness score of the face crop.
 - `media/FaceRules` turns scores into labels: eyes closed, blurry face, smiling, "sad mouth" (frown with no smile; MediaPipe has no mood label, so this is not a real emotion reading) and a photo score. The best-to-keep order is now: face score, resolution, sharpness, file size, so a photo with closed eyes loses to one with open eyes even if it is larger.
 - Face data is stored in the SQLite cache (DB version 2). Saved photos without it are analyzed once more when face detection is on. Switch in Settings. Faces are logged to `groups.jsonl` for later tuning. Build number 8.
+
+## Scan database backup and instant results (PR 9)
+- The scan database (`analysis.db`) is copied to `Documents/FileManagerTraining/db/analysis.db` after every scan and at most every 3 minutes during one (WAL checkpoint, then an atomic copy). An empty database never replaces a backup.
+- On first open after an uninstall, or whenever the database is empty, the copy is restored, then only new or changed files are scanned. Needs All files access.
+- The Photos tab shows the saved results as soon as the app opens (no Analyze needed). Saved photos that lack newer data (faces) stay visible; the extra analysis runs afterwards, after new files.
+- If MediaStore ids change, saved rows are matched again by path, size and modified time and saved under the new id.

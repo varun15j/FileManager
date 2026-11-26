@@ -132,6 +132,7 @@ class TrainingStore(val dir: File) {
 
     companion object {
         const val README = "FileManager training data. decisions.jsonl = user feedback (approved / rejected / cancelled) per group. " +
-            "groups.jsonl = analyzer output for reviewed groups. samples/ = small thumbnails. Safe to copy to a PC; reinstalling the app reloads it.\n"
+            "groups.jsonl = analyzer output for reviewed groups. samples/ = small thumbnails. db/analysis.db = copy of the scan database, restored after an uninstall so photos and videos are not scanned again. " +
+            "Safe to copy to a PC; reinstalling the app reloads it.\n"
     }
 }

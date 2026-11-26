@@ -25,11 +25,28 @@ class ScanPlannerTest {
         assertEquals(setOf("u3"), plan.removed)
     }
 
-    @Test fun photosWithoutFaceDataAreAnalyzedAgainOnlyWhenFacesAreWanted() {
+    @Test fun photosWithoutFaceDataAreShownAtOnceAndUpgradedLater() {
         val saved = mapOf("u1" to item(1, av = 0))
         val current = listOf(item(1, hashes = LongArray(0)))
-        assertEquals(listOf("u1"), ScanPlanner.plan(current, saved, requireFaces = true).analyze.map { it.uri })
-        assertEquals(listOf("u1"), ScanPlanner.plan(current, saved, requireFaces = false).reuse.map { it.uri })
+        val withFaces = ScanPlanner.plan(current, saved, requireFaces = true)
+        assertEquals(listOf("u1"), withFaces.reuse.map { it.uri })   // visible immediately
+        assertEquals(listOf("u1"), withFaces.upgrade.map { it.uri }) // faces added in the background
+        assertTrue(withFaces.analyze.isEmpty())
+        val noFaces = ScanPlanner.plan(current, saved, requireFaces = false)
+        assertEquals(listOf("u1"), noFaces.reuse.map { it.uri })
+        assertTrue(noFaces.upgrade.isEmpty())
+    }
+
+    @Test fun savedResultsAreFoundByPathWhenTheUriChanged() {
+        fun at(id: Long, path: String) = item(id).copy(path = path)
+        val saved = mapOf("old1" to at(1, "/a/1.jpg").copy(uri = "old1"))
+        val current = listOf(at(9, "/a/1.jpg").copy(hashes = LongArray(0)))
+        val plan = ScanPlanner.plan(current, saved)
+        assertEquals(listOf("u9"), plan.reuse.map { it.uri })
+        assertArrayEquals(longArrayOf(1), plan.reuse[0].hashes)
+        assertEquals(listOf("u9"), plan.rekeyed.map { it.uri })
+        assertTrue(plan.analyze.isEmpty())
+        assertEquals(setOf("old1"), plan.removed)
     }
 
     @Test fun faceCodecRoundTrip() {
