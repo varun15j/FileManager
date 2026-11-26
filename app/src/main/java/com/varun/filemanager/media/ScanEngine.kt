@@ -23,6 +23,8 @@ class ScanEngine(context: Context, private val db: AnalysisDb = AnalysisDb(conte
         thresholds: Thresholds = Thresholds(),
         /** Look for faces (eyes, smile, face sharpness). Saved photos without face data are shown at once and get faces afterwards. */
         detectFaces: Boolean = true,
+        /** Also compute image embeddings (needed once the user has custom categories). Saved photos without one get it afterwards. */
+        embeddings: Boolean = false,
         /** Called once with every saved, still-valid result. */
         onCached: (List<MediaItem>) -> Unit = {},
         /** Called after each newly analyzed (or upgraded) item. */
@@ -32,7 +34,7 @@ class ScanEngine(context: Context, private val db: AnalysisDb = AnalysisDb(conte
     ): List<MediaItem> {
         val started = System.currentTimeMillis()
         db.restoreIfEmpty()
-        val plan = ScanPlanner.plan(scanner.queryAll(), db.loadAll(), detectFaces)
+        val plan = ScanPlanner.plan(scanner.queryAll(), db.loadAll(), detectFaces, embeddings)
         db.save(plan.rekeyed)
         val all = LinkedHashMap<String, MediaItem>()
         plan.reuse.forEach { all[it.uri] = it }
@@ -44,7 +46,7 @@ class ScanEngine(context: Context, private val db: AnalysisDb = AnalysisDb(conte
         onProgress(0, total)
         val batch = ArrayList<MediaItem>()
         var lastBackup = System.currentTimeMillis()
-        scanner.openTagger(detectFaces)
+        scanner.openTagger(detectFaces, embeddings)
         try {
             for (raw in work) {
                 if (isCancelled()) break
