@@ -23,13 +23,14 @@ class DatasetFoldersTest {
 
     @Test fun signatureChangesWhenAPhotoIsAddedOrChanged() {
         put("a", "1.jpg", "one")
-        val before = DatasetFolders.scan(tmp.root).single()
-        assertEquals(before.signature, DatasetFolders.scan(tmp.root).single().signature)
+        // The signature reads the files when asked, so keep each value as text.
+        val before = DatasetFolders.scan(tmp.root).single().signature
+        assertEquals(before, DatasetFolders.scan(tmp.root).single().signature)
         put("a", "2.jpg", "two")
-        val added = DatasetFolders.scan(tmp.root).single()
-        assertNotEquals(before.signature, added.signature)
+        val added = DatasetFolders.scan(tmp.root).single().signature
+        assertNotEquals(before, added)
         put("a", "2.jpg", "two but longer")
-        assertNotEquals(added.signature, DatasetFolders.scan(tmp.root).single().signature)
+        assertNotEquals(added, DatasetFolders.scan(tmp.root).single().signature)
     }
 
     @Test fun labelsIdsAndDescriptionComeFromTheFolder() {
